@@ -11,6 +11,9 @@ from dotenv import load_dotenv
 from target_system.stub_metrics import get_current_metrics
 from agents.detective import analyze_incident, DetectiveDiagnosis
 from agents.remediator import propose_remediation, submit_to_policy_gateway, RemediatorAction
+from sandbox.executor import execute_action_in_sandbox
+from agents.verifier import verify_remediation, VerifierResult
+from agents.communicator import generate_postmortem
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(ROOT_DIR, ".env"))
@@ -40,6 +43,7 @@ class IncidentState(BaseModel):
     proposed_action: Optional[Dict[str, Any]] = None
     policy_verdict: Optional[Dict[str, Any]] = None
     approval_token: Optional[str] = None
+    postmortem: Optional[str] = None
     event_log: List[str] = Field(default_factory=list)
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
@@ -54,16 +58,84 @@ def log_event(state: IncidentState, message: str):
 
 def check_fast_path_router(incident_id: str, description: str) -> Optional[Dict[str, Any]]:
     """
-    Stub fast-path router. Returns None in Phase 2.
+    Stub fast-path router. Returns None in Phase 3.
     Will be hooked to Memory Engine in Phase 4.
     """
     return None
 
+def execute_remediation_and_verify(state: IncidentState):
+    """
+    Handles sandboxed execution, pre/post metrics verification, postmortem generation,
+    and terminal state resolution.
+    """
+    action_dict = state.proposed_action or {}
+    action_type = action_dict.get("action_type", "")
+
+    # 1. Set status to remediating
+    state.status = IncidentStatus.remediating
+    log_event(state, f"Starting sandboxed execution for action '{action_type}'")
+
+    # 2. Pre-execution metrics snapshot
+    try:
+        before_metrics = get_current_metrics(state.incident_id)
+        log_event(state, f"Pre-execution metrics snapshot: status='{before_metrics.get('status')}', cpu={before_metrics.get('cpu_percent')}%, err={before_metrics.get('error_rate')}")
+    except Exception as e:
+        log_event(state, f"Failed to snapshot pre-execution metrics: {e}")
+        state.status = IncidentStatus.failed
+        return
+
+    # 3. Call sandboxed executor
+    exec_res = execute_action_in_sandbox(action_type, incident_id=state.incident_id)
+    if not exec_res.get("success"):
+        err_msg = exec_res.get("error", "Unknown sandbox error")
+        log_event(state, f"Sandboxed execution failed: {err_msg}")
+        state.status = IncidentStatus.failed
+        return
+
+    log_event(state, "Sandboxed execution completed successfully (exit_code=0)")
+
+    # 4. Set status to verifying & invoke Verifier
+    state.status = IncidentStatus.verifying
+    log_event(state, "Snapshotting post-execution metrics and invoking Verifier Agent (openai/gpt-oss-20b)")
+    try:
+        after_metrics = get_current_metrics(state.incident_id)
+        log_event(state, f"Post-execution metrics snapshot: status='{after_metrics.get('status')}', cpu={after_metrics.get('cpu_percent')}%, err={after_metrics.get('error_rate')}")
+        
+        verifier_res: VerifierResult = verify_remediation(
+            action_type=action_type,
+            before_metrics=before_metrics,
+            after_metrics=after_metrics
+        )
+        log_event(state, f"Verifier result: resolved={verifier_res.resolved}, confidence={verifier_res.confidence}, summary='{verifier_res.summary}'")
+    except Exception as e:
+        log_event(state, f"Verifier Agent failed: {e}")
+        state.status = IncidentStatus.failed
+        return
+
+    # 5. Set status to communicating & invoke Communicator
+    state.status = IncidentStatus.communicating
+    log_event(state, "Invoking Communicator Agent (openai/gpt-oss-20b) to generate postmortem")
+    try:
+        postmortem_text = generate_postmortem(state.event_log)
+        state.postmortem = postmortem_text
+        log_event(state, f"Communicator postmortem generated: {postmortem_text[:60]}...")
+    except Exception as e:
+        log_event(state, f"Communicator Agent failed: {e}")
+        state.status = IncidentStatus.failed
+        return
+
+    # 6. Set terminal state
+    if verifier_res.resolved:
+        state.status = IncidentStatus.done
+        log_event(state, "Incident successfully resolved and verified.")
+    else:
+        state.status = IncidentStatus.failed
+        log_event(state, f"Incident verification failed: {verifier_res.summary}")
+
 def process_incident_flow(state: IncidentState, desired_action_type: Optional[str] = None):
     """
     Executes the incident response loop:
-    pull metrics -> Detective -> Remediator -> Policy Gateway -> state transition.
-    Non-blocking on approval wait.
+    pull metrics -> Detective -> Remediator -> Policy Gateway -> Sandboxed Execution -> Verifier -> Communicator.
     """
     # 1. Fast-path check
     fast_path_result = check_fast_path_router(state.incident_id, state.description)
@@ -72,7 +144,7 @@ def process_incident_flow(state: IncidentState, desired_action_type: Optional[st
         state.status = IncidentStatus.done
         return
 
-    # 2. Pull metrics from stub target system
+    # 2. Pull metrics from target system
     try:
         log_event(state, "Pulling telemetry metrics from target_system/stub_metrics.py")
         metrics = get_current_metrics(state.incident_id)
@@ -119,7 +191,7 @@ def process_incident_flow(state: IncidentState, desired_action_type: Optional[st
 
         if verdict == "auto-approve":
             log_event(state, f"Action auto-approved by Policy Gateway rule '{deciding_rule}'")
-            state.status = IncidentStatus.done
+            execute_remediation_and_verify(state)
         elif verdict == "needs-approval":
             token = verdict_res.get("token")
             expires_at = verdict_res.get("expires_at")
@@ -130,7 +202,7 @@ def process_incident_flow(state: IncidentState, desired_action_type: Optional[st
             log_event(state, f"Action denied by Policy Gateway rule '{deciding_rule}'")
             state.status = IncidentStatus.failed
     except Exception as e:
-        log_event(state, f"Policy Gateway submission failed: {e}")
+        log_event(state, f"Policy Gateway unreachable or error: {e}")
         state.status = IncidentStatus.failed
 
 app = FastAPI(title="Aegis Orchestrator")
@@ -183,7 +255,7 @@ def confirm_incident_approval(incident_id: str):
 
         if result == "approved":
             log_event(state, f"Policy Gateway confirmed approval for token '{token}'")
-            state.status = IncidentStatus.done
+            execute_remediation_and_verify(state)
         elif result == "expired":
             log_event(state, f"Approval token '{token}' has expired")
             state.status = IncidentStatus.failed
@@ -191,7 +263,7 @@ def confirm_incident_approval(incident_id: str):
             log_event(state, f"Approval confirmation returned '{result}'")
             state.status = IncidentStatus.failed
     except Exception as e:
-        log_event(state, f"Failed to confirm approval with Policy Gateway: {e}")
+        log_event(state, f"Policy Gateway unreachable or error: {e}")
         state.status = IncidentStatus.failed
 
     return state

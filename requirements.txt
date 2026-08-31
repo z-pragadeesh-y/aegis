@@ -9,3 +9,4 @@ google-generativeai
 websockets
 sqlalchemy
 pyyaml
+docker
