@@ -8,3 +8,4 @@ groq
 google-generativeai
 websockets
 sqlalchemy
+pyyaml
