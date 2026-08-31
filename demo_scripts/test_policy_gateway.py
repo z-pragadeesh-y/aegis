@@ -25,7 +25,7 @@ def test_expression_evaluator_security():
 
 def run_tests():
     passed = 0
-    total = 5
+    total = 7
 
     print("=== Aegis Policy Gateway Test Suite ===")
     
@@ -107,6 +107,42 @@ def run_tests():
         print(f"[FAIL] Case 5: Request failed: {e}")
     finally:
         main.APPROVAL_TOKEN_TTL_SECONDS = orig_ttl
+
+    # Test 6: replace_instance -> needs-approval, confirm -> approved
+    try:
+        resp = client.post("/evaluate", json={"action_type": "replace_instance", "payload": {"instance_id": "inst-123"}})
+        data = resp.json()
+        token = data.get("token")
+        if resp.status_code == 200 and data.get("verdict") == "needs-approval" and data.get("deciding_rule") == "risky-needs-approval" and token:
+            confirm_resp = client.post(f"/confirm/{token}")
+            c_data = confirm_resp.json()
+            if confirm_resp.status_code == 200 and c_data.get("result") == "approved":
+                print("[PASS] Case 6: replace_instance -> needs-approval & confirm -> approved")
+                passed += 1
+            else:
+                print(f"[FAIL] Case 6: Confirm failed, got {c_data}")
+        else:
+            print(f"[FAIL] Case 6: Evaluate failed, got {data}")
+    except Exception as e:
+        print(f"[FAIL] Case 6: Request failed: {e}")
+
+    # Test 7: rollback_deploy -> needs-approval, confirm -> approved
+    try:
+        resp = client.post("/evaluate", json={"action_type": "rollback_deploy", "payload": {"target_app": "checkout-api"}})
+        data = resp.json()
+        token = data.get("token")
+        if resp.status_code == 200 and data.get("verdict") == "needs-approval" and data.get("deciding_rule") == "risky-needs-approval" and token:
+            confirm_resp = client.post(f"/confirm/{token}")
+            c_data = confirm_resp.json()
+            if confirm_resp.status_code == 200 and c_data.get("result") == "approved":
+                print("[PASS] Case 7: rollback_deploy -> needs-approval & confirm -> approved")
+                passed += 1
+            else:
+                print(f"[FAIL] Case 7: Confirm failed, got {c_data}")
+        else:
+            print(f"[FAIL] Case 7: Evaluate failed, got {data}")
+    except Exception as e:
+        print(f"[FAIL] Case 7: Request failed: {e}")
 
     sec_pass = test_expression_evaluator_security()
 

@@ -119,7 +119,8 @@ def run_phase2_tests():
         expected_actions = sorted([
             "read_logs", "read_metrics", "restart_service", "throttle_process",
             "trigger_circuit_breaker", "reroute_traffic", "restart_instance",
-            "delete_database", "drop_table", "shutdown_service", "wipe_volume"
+            "replace_instance", "rollback_deploy", "delete_database", "drop_table",
+            "shutdown_service", "wipe_volume"
         ])
         print(f"Extracted action types from rules.yaml ({len(extracted_actions)}): {extracted_actions}")
         if extracted_actions != expected_actions:
@@ -139,7 +140,7 @@ def run_phase2_tests():
 
         if captured_logs and "[WARNING]" in captured_logs[0]:
             print(f"Fallback logger output captured: {captured_logs[0]}")
-            print("[PASS] Test 5: PyYAML rules extraction and fallback warning logger verified")
+            print("[PASS] Test 5: PyYAML rules extraction (13 action types) and fallback warning logger verified")
             passed += 1
         else:
             raise ValueError("Fallback path did not log expected warning message")
