@@ -1,0 +1,10 @@
+rules:
+  - id: "readonly-auto-approve"
+    condition: 'action.type in ["read_logs", "read_metrics"]'
+    verdict: "auto-approve"
+  - id: "risky-needs-approval"
+    condition: 'action.type in ["restart_service", "throttle_process", "trigger_circuit_breaker", "reroute_traffic", "restart_instance"]'
+    verdict: "needs-approval"
+  - id: "destructive-deny"
+    condition: 'action.type in ["delete_database", "drop_table", "shutdown_service", "wipe_volume"]'
+    verdict: "deny"
