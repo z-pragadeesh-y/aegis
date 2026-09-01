@@ -14,6 +14,7 @@ from agents.remediator import propose_remediation, submit_to_policy_gateway, Rem
 from sandbox.executor import execute_action_in_sandbox
 from agents.verifier import verify_remediation, VerifierResult
 from agents.communicator import generate_postmortem
+from memory_engine.memory import recall as memory_recall, remember as memory_remember
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(ROOT_DIR, ".env"))
@@ -49,6 +50,12 @@ class IncidentState(BaseModel):
     updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 incidents_db: Dict[str, IncidentState] = {}
+llm_call_counters = {
+    "detective_calls": 0,
+    "remediator_calls": 0,
+    "verifier_calls": 0,
+    "communicator_calls": 0
+}
 
 def log_event(state: IncidentState, message: str):
     timestamp = datetime.now(timezone.utc).isoformat()
@@ -56,18 +63,14 @@ def log_event(state: IncidentState, message: str):
     state.event_log.append(entry)
     state.updated_at = timestamp
 
-def check_fast_path_router(incident_id: str, description: str) -> Optional[Dict[str, Any]]:
-    """
-    Stub fast-path router. Returns None in Phase 3.
-    Will be hooked to Memory Engine in Phase 4.
-    """
-    return None
-
-def execute_remediation_and_verify(state: IncidentState):
+def execute_remediation_and_verify(state: IncidentState, start_time: Optional[float] = None):
     """
     Handles sandboxed execution, pre/post metrics verification, postmortem generation,
-    and terminal state resolution.
+    terminal state resolution, and storing successful resolutions in Memory Engine.
     """
+    if start_time is None:
+        start_time = time.time()
+
     action_dict = state.proposed_action or {}
     action_type = action_dict.get("action_type", "")
 
@@ -101,6 +104,7 @@ def execute_remediation_and_verify(state: IncidentState):
         after_metrics = get_current_metrics(state.incident_id)
         log_event(state, f"Post-execution metrics snapshot: status='{after_metrics.get('status')}', cpu={after_metrics.get('cpu_percent')}%, err={after_metrics.get('error_rate')}")
         
+        llm_call_counters["verifier_calls"] += 1
         verifier_res: VerifierResult = verify_remediation(
             action_type=action_type,
             before_metrics=before_metrics,
@@ -116,6 +120,7 @@ def execute_remediation_and_verify(state: IncidentState):
     state.status = IncidentStatus.communicating
     log_event(state, "Invoking Communicator Agent (openai/gpt-oss-20b) to generate postmortem")
     try:
+        llm_call_counters["communicator_calls"] += 1
         postmortem_text = generate_postmortem(state.event_log)
         state.postmortem = postmortem_text
         log_event(state, f"Communicator postmortem generated: {postmortem_text[:60]}...")
@@ -124,27 +129,44 @@ def execute_remediation_and_verify(state: IncidentState):
         state.status = IncidentStatus.failed
         return
 
-    # 6. Set terminal state
+    # 6. Set terminal state & store memory on genuine success
     if verifier_res.resolved:
         state.status = IncidentStatus.done
         log_event(state, "Incident successfully resolved and verified.")
+
+        elapsed_sec = max(0.1, round(time.time() - start_time, 2))
+        root_cause = (state.diagnosis or {}).get("root_cause", "")
+        if not root_cause:
+            root_cause = state.description
+
+        pre_cpu = before_metrics.get("cpu_percent", 0.0)
+        pre_err = before_metrics.get("error_rate", 0.0)
+        fault_sig = f"Description: {state.description} | Root Cause: {root_cause} | Metrics: status={before_metrics.get('status')}, cpu={pre_cpu}%, error_rate={pre_err}"
+
+        try:
+            memory_remember(
+                incident_id=state.incident_id,
+                fault_signature=fault_sig,
+                action_taken=action_dict,
+                outcome="resolved",
+                resolution_time_seconds=elapsed_sec
+            )
+            log_event(state, f"[MEMORY ENGINE] Successfully stored resolution memory for incident '{state.incident_id}' (resolution_time: {elapsed_sec}s)")
+        except Exception as me_err:
+            log_event(state, f"[MEMORY ENGINE] Warning: Failed to store memory: {me_err}")
+
     else:
         state.status = IncidentStatus.failed
         log_event(state, f"Incident verification failed: {verifier_res.summary}")
 
 def process_incident_flow(state: IncidentState, desired_action_type: Optional[str] = None):
     """
-    Executes the incident response loop:
-    pull metrics -> Detective -> Remediator -> Policy Gateway -> Sandboxed Execution -> Verifier -> Communicator.
+    Executes the incident response loop with Memory Engine Fast-Path:
+    pull metrics -> recall() memory check -> (Fast path OR Detective+Remediator) -> Policy Gateway -> Sandboxed Execution -> Verifier -> Communicator.
     """
-    # 1. Fast-path check
-    fast_path_result = check_fast_path_router(state.incident_id, state.description)
-    if fast_path_result:
-        log_event(state, f"Fast-path router matched pattern: {fast_path_result}")
-        state.status = IncidentStatus.done
-        return
+    start_time = time.time()
 
-    # 2. Pull metrics from target system
+    # 1. Pull telemetry metrics from target system
     try:
         log_event(state, "Pulling telemetry metrics from target_system/stub_metrics.py")
         metrics = get_current_metrics(state.incident_id)
@@ -154,44 +176,73 @@ def process_incident_flow(state: IncidentState, desired_action_type: Optional[st
         state.status = IncidentStatus.failed
         return
 
-    # 3. Call Detective Agent
-    state.status = IncidentStatus.detecting
-    log_event(state, "Invoking Detective Agent (openai/gpt-oss-20b)")
-    try:
-        diagnosis: DetectiveDiagnosis = analyze_incident(state.metrics)
-        state.diagnosis = diagnosis.model_dump()
-        log_event(state, f"Detective diagnosis: root_cause='{diagnosis.root_cause}', confidence={diagnosis.confidence}")
-    except Exception as e:
-        log_event(state, f"Detective Agent failed: {e}")
-        state.status = IncidentStatus.failed
-        return
+    # 2. Check Memory Engine Fast Path
+    pre_cpu = metrics.get("cpu_percent", 0.0)
+    pre_err = metrics.get("error_rate", 0.0)
+    fault_sig = f"Description: {state.description} | Root Cause: {state.description} | Metrics: status={metrics.get('status')}, cpu={pre_cpu}%, error_rate={pre_err}"
 
-    # 4. Call Remediator Agent
-    state.status = IncidentStatus.remediating
-    log_event(state, "Invoking Remediator Agent (openai/gpt-oss-120b)")
+    recalled_memory = None
     try:
-        action: RemediatorAction = propose_remediation(
-            diagnosis_dict=state.diagnosis,
-            desired_action_type=desired_action_type
+        recalled_memory = memory_recall(fault_sig, similarity_threshold=0.80)
+    except Exception as me_err:
+        log_event(state, f"[MEMORY ENGINE] Recall query error: {me_err}")
+
+    if recalled_memory and recalled_memory.get("action_taken"):
+        recalled_action = recalled_memory["action_taken"]
+        confidence = recalled_memory.get("confidence", 0.0)
+        past_inc_id = recalled_memory.get("incident_id", "unknown")
+
+        log_event(
+            state,
+            f"[FAST PATH TRIGGERED] Recalled past resolution from incident '{past_inc_id}' "
+            f"(confidence: {confidence:.2f}). SKIPPING Detective and Remediator LLM calls!"
         )
-        state.proposed_action = action.model_dump()
-        log_event(state, f"Remediator proposed action: type='{action.action_type}', target='{action.target}'")
-    except Exception as e:
-        log_event(state, f"Remediator Agent failed: {e}")
-        state.status = IncidentStatus.failed
-        return
+        state.proposed_action = recalled_action
 
-    # 5. Submit to Policy Gateway
-    log_event(state, "Submitting proposed action to Policy Gateway")
+    else:
+        log_event(state, "[FULL REASONING PATH] No confident memory match found. Proceeding to Detective and Remediator LLM calls.")
+
+        # 3. Call Detective Agent
+        state.status = IncidentStatus.detecting
+        log_event(state, "Invoking Detective Agent (openai/gpt-oss-20b)")
+        try:
+            llm_call_counters["detective_calls"] += 1
+            diagnosis: DetectiveDiagnosis = analyze_incident(state.metrics)
+            state.diagnosis = diagnosis.model_dump()
+            log_event(state, f"Detective diagnosis: root_cause='{diagnosis.root_cause}', confidence={diagnosis.confidence}")
+        except Exception as e:
+            log_event(state, f"Detective Agent failed: {e}")
+            state.status = IncidentStatus.failed
+            return
+
+        # 4. Call Remediator Agent
+        state.status = IncidentStatus.remediating
+        log_event(state, "Invoking Remediator Agent (openai/gpt-oss-120b)")
+        try:
+            llm_call_counters["remediator_calls"] += 1
+            action: RemediatorAction = propose_remediation(
+                diagnosis_dict=state.diagnosis,
+                desired_action_type=desired_action_type
+            )
+            state.proposed_action = action.model_dump()
+            log_event(state, f"Remediator proposed action: type='{action.action_type}', target='{action.target}'")
+        except Exception as e:
+            log_event(state, f"Remediator Agent failed: {e}")
+            state.status = IncidentStatus.failed
+            return
+
+    # 5. CRITICAL SAFETY INVARIANT — Submit proposed action to Policy Gateway (Fast-Path and Full-Path both evaluate!)
+    log_event(state, f"Submitting proposed action '{state.proposed_action.get('action_type')}' to Policy Gateway")
     try:
-        verdict_res = submit_to_policy_gateway(action, gateway_url=GATEWAY_URL)
+        p_action = RemediatorAction(**state.proposed_action) if isinstance(state.proposed_action, dict) else state.proposed_action
+        verdict_res = submit_to_policy_gateway(p_action, gateway_url=GATEWAY_URL)
         state.policy_verdict = verdict_res
         verdict = verdict_res.get("verdict")
         deciding_rule = verdict_res.get("deciding_rule")
 
         if verdict == "auto-approve":
             log_event(state, f"Action auto-approved by Policy Gateway rule '{deciding_rule}'")
-            execute_remediation_and_verify(state)
+            execute_remediation_and_verify(state, start_time=start_time)
         elif verdict == "needs-approval":
             token = verdict_res.get("token")
             expires_at = verdict_res.get("expires_at")
