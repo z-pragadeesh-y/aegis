@@ -30,6 +30,9 @@ def run_action_logic_on_state_file(action_type: str, file_path: str, incident_id
             state["status"] = "healthy"
     elif action_type in ("read_logs", "read_metrics"):
         pass
+    else:
+        # Destructive or unrecognized actions: no-op
+        pass
 
     write_state(incident_id, state)
 
@@ -61,9 +64,10 @@ def execute_action_in_sandbox(action_type: str, incident_id: str = "default") ->
                 from target_system.stub_metrics import reset_state
                 reset_state(incident_id)
 
+            target_sys_dir = os.path.dirname(STATE_HOST_PATH)
             volumes = {
-                os.path.abspath(STATE_HOST_PATH): {
-                    "bind": "/data/state.json",
+                os.path.abspath(target_sys_dir): {
+                    "bind": "/data",
                     "mode": "rw"
                 }
             }

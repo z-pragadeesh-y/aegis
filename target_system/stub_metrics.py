@@ -1,8 +1,10 @@
 import os
 import json
 from typing import Dict, Any, Optional
+from filelock import FileLock
 
 STATE_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.json")
+LOCK_FILE_PATH = STATE_FILE_PATH + ".lock"
 
 BASELINE_DEGRADED_STATE = {
     "cpu_percent": 92.0,
@@ -34,33 +36,41 @@ def save_all_states(all_states: Dict[str, Dict[str, Any]]):
 def reset_state(incident_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Resets state for a specific incident_id (or resets all if None) to BASELINE_DEGRADED_STATE.
+    Protected by filelock across processes.
     """
-    all_states = load_all_states()
-    if incident_id:
-        all_states[incident_id] = BASELINE_DEGRADED_STATE.copy()
-        save_all_states(all_states)
-        return all_states[incident_id].copy()
-    else:
-        all_states = {}
-        save_all_states(all_states)
-        return BASELINE_DEGRADED_STATE.copy()
+    with FileLock(LOCK_FILE_PATH, timeout=10.0):
+        all_states = load_all_states()
+        if incident_id:
+            all_states[incident_id] = BASELINE_DEGRADED_STATE.copy()
+            save_all_states(all_states)
+            return all_states[incident_id].copy()
+        else:
+            all_states = {}
+            save_all_states(all_states)
+            return BASELINE_DEGRADED_STATE.copy()
 
 def read_state(incident_id: str = "default") -> Dict[str, Any]:
     """
     Reads specific incident's state from state.json, auto-initializing fresh
     BASELINE_DEGRADED_STATE for any incident_id not yet present.
+    Protected by filelock across processes.
     """
-    all_states = load_all_states()
-    if incident_id not in all_states or not isinstance(all_states[incident_id], dict) or "cpu_percent" not in all_states[incident_id]:
-        all_states[incident_id] = BASELINE_DEGRADED_STATE.copy()
-        save_all_states(all_states)
-    return all_states[incident_id].copy()
+    with FileLock(LOCK_FILE_PATH, timeout=10.0):
+        all_states = load_all_states()
+        if incident_id not in all_states or not isinstance(all_states[incident_id], dict) or "cpu_percent" not in all_states[incident_id]:
+            all_states[incident_id] = BASELINE_DEGRADED_STATE.copy()
+            save_all_states(all_states)
+        return all_states[incident_id].copy()
 
 def write_state(incident_id: str, new_state: dict):
-    """Overwrites specified incident's state inside state.json."""
-    all_states = load_all_states()
-    all_states[incident_id] = new_state
-    save_all_states(all_states)
+    """
+    Overwrites specified incident's state inside state.json.
+    Protected by filelock across processes.
+    """
+    with FileLock(LOCK_FILE_PATH, timeout=10.0):
+        all_states = load_all_states()
+        all_states[incident_id] = new_state
+        save_all_states(all_states)
 
 def get_current_metrics(incident_id: str) -> dict:
     """

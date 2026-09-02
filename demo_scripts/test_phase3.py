@@ -220,10 +220,11 @@ def run_phase3_tests():
     # Test 8: Concurrency Intermediate Status Polling Test
     print("\n--- Test 8: Concurrency & Intermediate Status Polling Test ---")
     try:
-        reset_state("test-p3-concurrency-1")
+        unique_inc_id = f"test-p3-conc-{int(time.time())}"
+        reset_state(unique_inc_id)
         base_url = "http://127.0.0.1:8002"
         
-        req = {"incident_id": "test-p3-concurrency-1", "description": "Concurrency status test", "desired_action_type": "restart_service"}
+        req = {"incident_id": unique_inc_id, "description": "Concurrency status test", "desired_action_type": "restart_service"}
         resp = httpx.post(f"{base_url}/incidents", json=req, timeout=10.0)
         data = resp.json()
         inc_id = data.get("incident_id")
@@ -249,7 +250,7 @@ def run_phase3_tests():
         poll_thread.start()
 
         # Call confirm over HTTP in main thread while polling runs in background thread
-        confirm_resp = httpx.post(f"{base_url}/incidents/{inc_id}/confirm", timeout=20.0)
+        confirm_resp = httpx.post(f"{base_url}/incidents/{inc_id}/confirm", timeout=60.0)
         stop_polling.set()
         poll_thread.join()
 

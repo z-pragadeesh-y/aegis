@@ -11,3 +11,4 @@ sqlalchemy
 pyyaml
 docker
 sentence-transformers
+filelock
