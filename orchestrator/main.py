@@ -1,5 +1,6 @@
 import os
 import time
+import threading
 import httpx
 import asyncio
 from datetime import datetime, timezone
@@ -106,7 +107,10 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+main_event_loop = None
+
 def notify_websocket_listeners(state: IncidentState, entry: str):
+    global main_event_loop
     state_dump = state.model_dump()
     payload = {
         "event_type": "log_entry",
@@ -125,16 +129,13 @@ def notify_websocket_listeners(state: IncidentState, entry: str):
 
     try:
         loop = asyncio.get_running_loop()
+        main_event_loop = loop
         loop.create_task(manager.broadcast_incident(state.incident_id, payload))
         loop.create_task(manager.broadcast_global(global_payload))
     except RuntimeError:
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.run_coroutine_threadsafe(manager.broadcast_incident(state.incident_id, payload), loop)
-                asyncio.run_coroutine_threadsafe(manager.broadcast_global(global_payload), loop)
-        except Exception:
-            pass
+        if main_event_loop and main_event_loop.is_running():
+            asyncio.run_coroutine_threadsafe(manager.broadcast_incident(state.incident_id, payload), main_event_loop)
+            asyncio.run_coroutine_threadsafe(manager.broadcast_global(global_payload), main_event_loop)
 
 def log_event(state: IncidentState, message: str):
     timestamp = datetime.now(timezone.utc).isoformat()
@@ -347,7 +348,7 @@ app.add_middleware(
 )
 
 @app.post("/incidents", response_model=IncidentState)
-def create_incident(req: IncidentCreateRequest):
+async def create_incident(req: IncidentCreateRequest):
     if req.incident_id in incidents_db:
         raise HTTPException(status_code=400, detail="Incident ID already exists")
 
@@ -356,10 +357,11 @@ def create_incident(req: IncidentCreateRequest):
         description=req.description,
         status=IncidentStatus.detecting
     )
-    log_event(state, f"Incident '{req.incident_id}' created: {req.description}")
     incidents_db[req.incident_id] = state
+    log_event(state, f"Incident '{req.incident_id}' created: {req.description}")
 
-    process_incident_flow(state, desired_action_type=req.desired_action_type)
+    thread = threading.Thread(target=process_incident_flow, args=(state, req.desired_action_type))
+    thread.start()
     return state
 
 @app.get("/incidents/{incident_id}", response_model=IncidentState)
@@ -404,8 +406,11 @@ def confirm_incident_approval(incident_id: str):
     except Exception as e:
         log_event(state, f"Policy Gateway unreachable or error: {e}")
         state.status = IncidentStatus.failed
-
     return state
+
+@app.get("/llm-call-counters")
+def get_llm_call_counters():
+    return llm_call_counters
 
 @app.websocket("/ws/incidents/{incident_id}")
 async def websocket_incident_endpoint(websocket: WebSocket, incident_id: str):
@@ -426,8 +431,15 @@ async def websocket_incident_endpoint(websocket: WebSocket, incident_id: str):
     except Exception:
         manager.disconnect_incident(incident_id, websocket)
 
+@app.on_event("startup")
+async def startup_event():
+    global main_event_loop
+    main_event_loop = asyncio.get_running_loop()
+
 @app.websocket("/ws/incidents")
 async def websocket_broadcast_endpoint(websocket: WebSocket):
+    global main_event_loop
+    main_event_loop = asyncio.get_running_loop()
     await manager.connect_broadcast(websocket)
     await websocket.send_json({
         "event_type": "init",

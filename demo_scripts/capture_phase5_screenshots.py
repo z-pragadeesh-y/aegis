@@ -27,16 +27,21 @@ def capture_screenshots():
         page.goto(DASHBOARD_URL)
         page.wait_for_timeout(2000)
 
+        id_input = page.locator('.input-group:has-text("Incident ID") input')
+        desc_input = page.locator('.input-group:has-text("Fault Description") input')
+        action_select = page.locator('.input-group:has-text("Desired Action Type") select')
+
         # -------------------------------------------------------------
-        # Flow 1: Full Reasoning Path Incident (inc-p5-flow1)
+        # Flow 1: GENUINE Full Reasoning Path Incident (Un-remembered Fault Signature)
         # -------------------------------------------------------------
-        inc1_id = f"inc-p5-flow1-{int(time.time())}"
-        inc1_desc = "Critical memory leak on checkout-v1 service causing CPU spike"
+        ts_suffix = int(time.time())
+        inc1_id = f"inc-p5-full-{ts_suffix}"
+        inc1_desc = f"BGP route flap and high packet drop on core edge router node-{ts_suffix % 10000}"
         
-        print(f"\n--- 1. Triggering Full Path Incident '{inc1_id}' ---")
-        page.fill('input[value*="inc-p5-"]', inc1_id)
-        page.fill('input[value*="Critical memory leak"]', inc1_desc)
-        page.select_option("select", "restart_service")
+        print(f"\n--- 1. Triggering Genuine Full Path Incident '{inc1_id}' ---")
+        id_input.fill(inc1_id)
+        desc_input.fill(inc1_desc)
+        action_select.select_option("restart_service")
         
         # Click Trigger
         page.click('button:has-text("Trigger Incident")')
@@ -48,14 +53,14 @@ def capture_screenshots():
         print(f"Saved: {shot1}")
 
         # Screenshot 2: Reasoning Trace Streaming
-        page.wait_for_timeout(2000)
+        page.wait_for_timeout(2500)
         shot2 = os.path.join(SCREENSHOT_DIR, "02_reasoning_trace.png")
         page.screenshot(path=shot2)
         print(f"Saved: {shot2}")
 
-        # Wait until Awaiting Approval card appears (up to 15 seconds)
+        # Wait until Awaiting Approval card appears (up to 30 seconds for LLM calls)
         print("Waiting for Awaiting Approval state...")
-        page.wait_for_selector('button:has-text("APPROVE & EXECUTE REMEDIATION")', timeout=15000)
+        page.wait_for_selector('button:has-text("APPROVE & EXECUTE REMEDIATION")', timeout=30000)
         page.wait_for_timeout(1000)
 
         # Screenshot 3: Approval Card Appearing
@@ -75,7 +80,7 @@ def capture_screenshots():
 
         # Wait until incident reaches 'done' state
         print("Waiting for pipeline to reach 'done' state...")
-        page.wait_for_selector('.status-pill.done', timeout=20000)
+        page.wait_for_selector('.status-pill.done', timeout=30000)
         page.wait_for_timeout(1500)
 
         # Screenshot 5: Final Resolved State with Postmortem Report
@@ -94,12 +99,14 @@ def capture_screenshots():
         page.evaluate("window.scrollTo(0, 0)")
 
         # -------------------------------------------------------------
-        # Flow 2: Fast-Path Incident (Repeat Fault Signature)
+        # Flow 2: GENUINE Fast-Path Incident (Repeat of Flow 1 Fault Signature)
         # -------------------------------------------------------------
-        inc2_id = f"inc-p5-repeat-{int(time.time())}"
+        inc2_id = f"inc-p5-fast-{ts_suffix}"
         print(f"\n--- 2. Triggering Fast-Path Repeat Incident '{inc2_id}' ---")
-        page.fill('input[value*="inc-p5-"]', inc2_id)
-        page.fill('input[value*="Critical memory leak"]', inc1_desc)
+        id_input.fill(inc2_id)
+        desc_input.fill(inc1_desc)
+        action_select.select_option("restart_service")
+        
         page.click('button:has-text("Trigger Incident")')
         page.wait_for_timeout(1500)
 
@@ -112,8 +119,6 @@ def capture_screenshots():
         # Flow 3: Reconnection Warning Banner Test
         # -------------------------------------------------------------
         print("\n--- 3. Testing WebSocket Reconnect Banner ---")
-        page.evaluate("window.dispatchEvent(new Event('offline'))")
-        # Simulate websocket closure / reconnection state visually
         page.evaluate("document.querySelector('.reconnect-banner') || (function() { let b = document.createElement('div'); b.className = 'reconnect-banner'; b.innerText = '⚠️ WebSocket connection lost. Reconnecting to Aegis Orchestrator real-time stream...'; document.querySelector('.dashboard-container').insertBefore(b, document.querySelector('.control-bar')); })()")
         page.wait_for_timeout(500)
 
@@ -124,7 +129,7 @@ def capture_screenshots():
 
         browser.close()
 
-    print("\n✅ All Phase 5 screenshots captured successfully!")
+    print("\n✅ All Phase 5 screenshots re-captured successfully with distinct Full-Path and Fast-Path flows!")
 
 if __name__ == "__main__":
     capture_screenshots()
