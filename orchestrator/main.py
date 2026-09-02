@@ -1,10 +1,12 @@
 import os
 import time
 import httpx
+import asyncio
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Dict, Any, List, Optional
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
@@ -57,11 +59,89 @@ llm_call_counters = {
     "communicator_calls": 0
 }
 
+class ConnectionManager:
+    def __init__(self):
+        self.incident_listeners: Dict[str, List[WebSocket]] = {}
+        self.broadcast_listeners: List[WebSocket] = []
+
+    async def connect_incident(self, incident_id: str, websocket: WebSocket):
+        await websocket.accept()
+        if incident_id not in self.incident_listeners:
+            self.incident_listeners[incident_id] = []
+        self.incident_listeners[incident_id].append(websocket)
+
+    def disconnect_incident(self, incident_id: str, websocket: WebSocket):
+        if incident_id in self.incident_listeners:
+            if websocket in self.incident_listeners[incident_id]:
+                self.incident_listeners[incident_id].remove(websocket)
+
+    async def connect_broadcast(self, websocket: WebSocket):
+        await websocket.accept()
+        self.broadcast_listeners.append(websocket)
+
+    def disconnect_broadcast(self, websocket: WebSocket):
+        if websocket in self.broadcast_listeners:
+            self.broadcast_listeners.remove(websocket)
+
+    async def broadcast_incident(self, incident_id: str, payload: dict):
+        if incident_id in self.incident_listeners:
+            dead_sockets = []
+            for ws in list(self.incident_listeners[incident_id]):
+                try:
+                    await ws.send_json(payload)
+                except Exception:
+                    dead_sockets.append(ws)
+            for ds in dead_sockets:
+                self.disconnect_incident(incident_id, ds)
+
+    async def broadcast_global(self, payload: dict):
+        dead_sockets = []
+        for ws in list(self.broadcast_listeners):
+            try:
+                await ws.send_json(payload)
+            except Exception:
+                dead_sockets.append(ws)
+        for ds in dead_sockets:
+            self.disconnect_broadcast(ds)
+
+manager = ConnectionManager()
+
+def notify_websocket_listeners(state: IncidentState, entry: str):
+    state_dump = state.model_dump()
+    payload = {
+        "event_type": "log_entry",
+        "incident_id": state.incident_id,
+        "status": state.status.value if isinstance(state.status, IncidentStatus) else str(state.status),
+        "new_log": entry,
+        "state": state_dump
+    }
+    global_payload = {
+        "event_type": "incident_updated",
+        "incident_id": state.incident_id,
+        "status": state.status.value if isinstance(state.status, IncidentStatus) else str(state.status),
+        "description": state.description,
+        "updated_at": state.updated_at
+    }
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(manager.broadcast_incident(state.incident_id, payload))
+        loop.create_task(manager.broadcast_global(global_payload))
+    except RuntimeError:
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.run_coroutine_threadsafe(manager.broadcast_incident(state.incident_id, payload), loop)
+                asyncio.run_coroutine_threadsafe(manager.broadcast_global(global_payload), loop)
+        except Exception:
+            pass
+
 def log_event(state: IncidentState, message: str):
     timestamp = datetime.now(timezone.utc).isoformat()
     entry = f"[{timestamp}] {message}"
     state.event_log.append(entry)
     state.updated_at = timestamp
+    notify_websocket_listeners(state, entry)
 
 def execute_remediation_and_verify(state: IncidentState, start_time: Optional[float] = None):
     """
@@ -258,6 +338,14 @@ def process_incident_flow(state: IncidentState, desired_action_type: Optional[st
 
 app = FastAPI(title="Aegis Orchestrator")
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 @app.post("/incidents", response_model=IncidentState)
 def create_incident(req: IncidentCreateRequest):
     if req.incident_id in incidents_db:
@@ -318,3 +406,37 @@ def confirm_incident_approval(incident_id: str):
         state.status = IncidentStatus.failed
 
     return state
+
+@app.websocket("/ws/incidents/{incident_id}")
+async def websocket_incident_endpoint(websocket: WebSocket, incident_id: str):
+    await manager.connect_incident(incident_id, websocket)
+    if incident_id in incidents_db:
+        st = incidents_db[incident_id]
+        await websocket.send_json({
+            "event_type": "init",
+            "incident_id": incident_id,
+            "status": st.status.value if isinstance(st.status, IncidentStatus) else str(st.status),
+            "state": st.model_dump()
+        })
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect_incident(incident_id, websocket)
+    except Exception:
+        manager.disconnect_incident(incident_id, websocket)
+
+@app.websocket("/ws/incidents")
+async def websocket_broadcast_endpoint(websocket: WebSocket):
+    await manager.connect_broadcast(websocket)
+    await websocket.send_json({
+        "event_type": "init",
+        "incidents": [s.model_dump() for s in incidents_db.values()]
+    })
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect_broadcast(websocket)
+    except Exception:
+        manager.disconnect_broadcast(websocket)

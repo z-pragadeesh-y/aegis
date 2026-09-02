@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
@@ -98,6 +99,14 @@ def insert_audit_log(
         conn.commit()
 
 app = FastAPI(title="Aegis Policy Gateway")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class EvaluateRequest(BaseModel):
     action_type: str
@@ -210,3 +219,29 @@ def confirm_action(token: str):
     )
     
     return ConfirmResponse(result=result)
+
+@app.get("/audit-log")
+def get_audit_log(limit: int = 50):
+    with get_db_connection() as conn:
+        cursor = conn.execute(
+            """
+            SELECT id, timestamp, action_type, action_payload, verdict, deciding_rule, token
+            FROM audit_log
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,)
+        )
+        rows = cursor.fetchall()
+        result = []
+        for r in rows:
+            result.append({
+                "id": r["id"],
+                "timestamp": r["timestamp"],
+                "action_type": r["action_type"],
+                "action_payload": r["action_payload"],
+                "verdict": r["verdict"],
+                "deciding_rule": r["deciding_rule"],
+                "token": r["token"]
+            })
+        return result
