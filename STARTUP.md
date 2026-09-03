@@ -66,7 +66,22 @@ npm run dev
 
 ---
 
-## 3. Running Verification Test Suites
+## 3. Pre-Demo Sanity Check & Model Warm-Up
+
+### Step 1: Pre-Demo Health Check
+Run the one-command service health checker to confirm all 5 services are active and reachable:
+```powershell
+python demo_scripts/check_all_services.py
+```
+
+### Step 2: First-Run Model Warm-Up Note
+> [!IMPORTANT]
+> **SentenceTransformer Weight Warm-Up Overhead**: On cold start, the first incident resolution triggers PyTorch / HuggingFace to load `all-MiniLM-L6-v2` embedding weights from disk into memory (~10–14 seconds). Subsequent runs reuse pre-loaded weights instantly (~0.05 seconds).  
+> **Best Practice**: Always trigger one throwaway test incident or run `rehearse_demo.py` prior to a live presentation so model weights are pre-warmed in memory!
+
+---
+
+## 4. Running Verification Test Suites
 
 To verify individual components or run full system regression suites:
 

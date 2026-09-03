@@ -81,8 +81,8 @@ All core capabilities and edge-cases have been rigorously verified through compr
 
 | Benchmark / Test Metric | Measured Value | Requirement / Target | Verdict |
 | :--- | :--- | :--- | :---: |
-| **`/confirm` Endpoint HTTP Latency** | **445 - 467 ms** | `< 500 ms` | **PASSED** |
-| **Memory Fast-Path Trigger Time** | **0.65 - 0.66 s** | `< 1.0 s` | **PASSED** |
+| **`/confirm` Endpoint HTTP Latency** | **341 - 459 ms** | `< 500 ms` | **PASSED** |
+| **Memory Fast-Path Trigger Time** | **0.65 - 0.87 s** | `< 1.0 s` | **PASSED** |
 | **Memory Fast-Path LLM Call Savings** | **0 / 0 LLM Calls** | `0 LLM Calls` | **PASSED** |
 | **Fault Injection Presets Verified** | **5 / 5 Fault Types** | `5 Fault Types` | **PASSED** |
 | **State Isolation & Concurrency** | **FileLock Protected** | `Thread/Process Safe` | **PASSED** |
