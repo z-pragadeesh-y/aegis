@@ -137,6 +137,11 @@ def run_single_rehearsal_pass(run_index: int):
     print(f"  -> Reached 'awaiting_approval' via Memory Fast Path in {t_fastpath_to_approval:.2f}s")
     print(f"  -> LLM Calls Executed: Detective={detective_delta}, Remediator={remediator_delta} (Expected 0/0)")
 
+    assert detective_delta == 0 and remediator_delta == 0, (
+        f"Run #{run_index} Step C Fast-Path failed! Executed LLM calls: "
+        f"Detective={detective_delta}, Remediator={remediator_delta} (Expected 0/0)"
+    )
+
     # Confirm second incident
     client.post(f"/incidents/{inc_id_2}/confirm")
     done_fast = time.time()

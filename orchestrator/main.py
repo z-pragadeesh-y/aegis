@@ -218,9 +218,6 @@ def execute_remediation_and_verify(state: IncidentState, start_time: Optional[fl
 
     # 6. Set terminal state & store memory on genuine success
     if verifier_res.resolved:
-        state.status = IncidentStatus.done
-        log_event(state, "Incident successfully resolved and verified.")
-
         elapsed_sec = max(0.1, round(time.time() - start_time, 2))
         root_cause = (state.diagnosis or {}).get("root_cause", "")
         if not root_cause:
@@ -231,6 +228,8 @@ def execute_remediation_and_verify(state: IncidentState, start_time: Optional[fl
         fault_sig = f"Description: {state.description} | Metrics: status={before_metrics.get('status')}, cpu={pre_cpu}%, error_rate={pre_err}"
 
         try:
+            t_rem_start = time.time()
+            log_event(state, f"[MEMORY ENGINE] Starting memory_remember write for incident '{state.incident_id}'...")
             memory_remember(
                 incident_id=state.incident_id,
                 fault_signature=fault_sig,
@@ -238,9 +237,14 @@ def execute_remediation_and_verify(state: IncidentState, start_time: Optional[fl
                 outcome="resolved",
                 resolution_time_seconds=elapsed_sec
             )
-            log_event(state, f"[MEMORY ENGINE] Successfully stored resolution memory for incident '{state.incident_id}' (resolution_time: {elapsed_sec}s)")
+            t_rem_elapsed = (time.time() - t_rem_start) * 1000.0
+            log_event(state, f"[MEMORY ENGINE] Successfully stored resolution memory for incident '{state.incident_id}' in {t_rem_elapsed:.1f}ms (resolution_time: {elapsed_sec}s)")
         except Exception as me_err:
             log_event(state, f"[MEMORY ENGINE] Warning: Failed to store memory: {me_err}")
+
+        # Set status = done ONLY after memory_remember has completed writing
+        state.status = IncidentStatus.done
+        log_event(state, "Incident successfully resolved and verified.")
 
     else:
         state.status = IncidentStatus.failed
