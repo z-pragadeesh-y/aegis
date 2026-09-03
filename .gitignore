@@ -12,3 +12,4 @@ build/
 target_system/state.json
 memory_engine/qdrant_storage/
 audit_log/*.db
+demo_scripts/video_scratch/
