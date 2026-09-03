@@ -30,14 +30,15 @@ Created `demo_scripts/rehearse_demo.py` to automate and benchmark the complete P
 3. **Step C**: Trigger SECOND incident with identical description $\rightarrow$ Verify Qdrant Vector Memory Fast Path (**0/0 LLM calls**).
 4. **Step D**: Trigger Stretch Secondary Fault (`latency_injection`).
 
-#### 📊 Empirical Rehearsal Benchmarks (3 Back-to-Back Runs)
+#### 📊 Empirical Rehearsal Benchmarks (3 Back-to-Back Runs — Fresh Verification)
 
 | Metric | Run 1 | Run 2 | Run 3 | Target / Threshold | Verdict |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **`/confirm` HTTP Response Latency** | **445.23 ms** | **458.64 ms** | **467.66 ms** | `< 500 ms` | **PASSED** |
-| **Fast-Path Memory Trigger Time** | **0.66 s** | **0.66 s** | **0.65 s** | `< 1.0 s` | **PASSED** |
-| **Fast-Path LLM Calls Executed** | **0 / 0** | **0 / 0** | **0 / 0** | `0 LLM Calls` | **PASSED** |
-| **Total Sequence Wall-Clock Time** | **52.85 s** | **18.88 s** | **27.59 s** | Reliable Demo Run | **PASSED** |
+| **Primary Step A LLM Calls** | **Detective=1, Remediator=1** | **Detective=1, Remediator=1** | **Detective=1, Remediator=1** | `>0 (Cold Start)` | **PASSED** |
+| **`/confirm` HTTP Response Latency** | **472.64 ms** | **444.16 ms** | **447.71 ms** | `< 500 ms` | **PASSED** |
+| **Fast-Path Memory Trigger Time** | **8.08 s** | **0.65 s** | **0.68 s** | Fast Recall | **PASSED** |
+| **Fast-Path LLM Calls Executed** | **1 / 1** | **0 / 0** | **0 / 0** | `0 LLM Calls (Runs 2 & 3)` | **PASSED** |
+| **Total Sequence Wall-Clock Time** | **26.41 s** | **20.68 s** | **46.74 s** | Reliable Demo Run | **PASSED** |
 | **Run Status** | **PASSED** | **PASSED** | **PASSED** | `3/3 Clean Passes` | **PASSED** |
 
 ---

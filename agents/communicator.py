@@ -46,12 +46,16 @@ def generate_postmortem(event_log: List[str], api_key: Optional[str] = None) -> 
                 )
 
                 content = completion.choices[0].message.content
+                if "<think>" in content and "</think>" in content:
+                    content = content.split("</think>")[-1].strip()
+                elif "</think>" in content:
+                    content = content.split("</think>")[-1].strip()
                 if content and content.strip():
                     return content.strip()
                 raise ValueError("LLM returned empty completion")
             except Exception as e:
                 last_exception = e
-                if "429" in str(e) or "rate_limit" in str(e).lower():
+                if "429" in str(e) or "rate_limit" in str(e).lower() or "400" in str(e) or "json" in str(e).lower():
                     break
                 time.sleep(0.5)
 

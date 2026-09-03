@@ -69,38 +69,50 @@ def verify_remediation(action_type: str, before_metrics: Dict[str, Any], after_m
     for model_name in models_to_try:
         for attempt in range(2):
             try:
-                completion = client.chat.completions.create(
-                    model=model_name,
-                    messages=[
-                        {"role": "system", "content": "You are an SRE Verifier agent. Output JSON matching the schema."},
+                kwargs = {
+                    "model": model_name,
+                    "messages": [
+                        {"role": "system", "content": "You are an SRE Verifier agent. Output JSON with fields: resolved (boolean), summary (string), confidence (number 0.0 to 1.0)."},
                         {"role": "user", "content": prompt}
                     ],
-                    response_format={
+                    "max_tokens": 2500 if "qwen" in model_name else 1000
+                }
+                if "qwen" in model_name:
+                    kwargs["response_format"] = {"type": "json_object"}
+                else:
+                    kwargs["response_format"] = {
                         "type": "json_schema",
                         "json_schema": {
                             "name": "verifier_result",
                             "strict": True,
                             "schema": VERIFIER_SCHEMA
                         }
-                    },
-                    max_tokens=1000
-                )
+                    }
 
+                completion = client.chat.completions.create(**kwargs)
                 content = completion.choices[0].message.content
+                if "<think>" in content and "</think>" in content:
+                    content = content.split("</think>")[-1].strip()
+                elif "</think>" in content:
+                    content = content.split("</think>")[-1].strip()
+                if "```json" in content:
+                    content = content.split("```json")[1].split("```")[0].strip()
+                elif "```" in content:
+                    content = content.split("```")[1].split("```")[0].strip()
                 parsed = json.loads(content)
                 parsed_res = VerifierResult(**parsed)
                 break
 
             except Exception as e:
                 last_exception = e
-                if "429" in str(e) or "rate_limit" in str(e).lower():
+                if "429" in str(e) or "rate_limit" in str(e).lower() or "400" in str(e) or "json" in str(e).lower():
                     break
                 time.sleep(0.5)
         if parsed_res:
             break
 
     if not parsed_res:
-        raise RuntimeError(f"Verifier Agent failed after {max_attempts} attempts: {last_exception}")
+        raise RuntimeError(f"Verifier Agent failed across all fallback models: {last_exception}")
 
     # Local deterministic sanity check independent of LLM
     llm_resolved = parsed_res.resolved

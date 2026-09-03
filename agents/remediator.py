@@ -153,24 +153,40 @@ def propose_remediation(diagnosis_dict: Dict[str, Any], desired_action_type: Opt
     for model_name in models_to_try:
         for attempt in range(2):
             try:
-                completion = client.chat.completions.create(
-                    model=model_name,
-                    messages=[
-                        {"role": "system", "content": "You are a specialist SRE Remediator agent. Output JSON matching the schema."},
-                        {"role": "user", "content": prompt}
+                sys_content = f"You are a specialist SRE Remediator agent. Output JSON with fields: action_type (one of {valid_actions}), target (string), reasoning (string)."
+                if "qwen" in model_name:
+                    sys_content = f"You are a specialist SRE Remediator agent. You MUST output a valid JSON object with keys: action_type (one of {valid_actions}), target (string), reasoning (string)."
+
+                kwargs = {
+                    "model": model_name,
+                    "messages": [
+                        {"role": "system", "content": sys_content},
+                        {"role": "user", "content": prompt + "\nOutput a valid JSON object."}
                     ],
-                    response_format={
+                    "max_tokens": 2500 if "qwen" in model_name else 1000
+                }
+                if "qwen" in model_name:
+                    kwargs["response_format"] = {"type": "json_object"}
+                else:
+                    kwargs["response_format"] = {
                         "type": "json_schema",
                         "json_schema": {
                             "name": "remediator_action",
                             "strict": True,
                             "schema": remediator_schema
                         }
-                    },
-                    max_tokens=1000
-                )
+                    }
 
+                completion = client.chat.completions.create(**kwargs)
                 content = completion.choices[0].message.content
+                if "<think>" in content and "</think>" in content:
+                    content = content.split("</think>")[-1].strip()
+                elif "</think>" in content:
+                    content = content.split("</think>")[-1].strip()
+                if "```json" in content:
+                    content = content.split("```json")[1].split("```")[0].strip()
+                elif "```" in content:
+                    content = content.split("```")[1].split("```")[0].strip()
                 parsed = json.loads(content)
                 
                 action = RemediatorAction(**parsed)
@@ -178,8 +194,8 @@ def propose_remediation(diagnosis_dict: Dict[str, Any], desired_action_type: Opt
 
             except Exception as e:
                 last_exception = e
-                if "429" in str(e) or "rate_limit" in str(e).lower():
-                    break # Switch to next model immediately on rate limit
+                if "429" in str(e) or "rate_limit" in str(e).lower() or "400" in str(e) or "json" in str(e).lower():
+                    break # Switch to next model immediately
                 time.sleep(0.5)
 
     raise RuntimeError(f"Remediator Agent failed across all fallback models: {last_exception}")

@@ -47,24 +47,23 @@ def run_single_rehearsal_pass(run_index: int):
         "desired_action_type": "restart_service"
     }
 
-    # Step A: Force Cold-Start Full Reasoning Path (1 Detective + 1 Remediator call) by patching memory_recall to None
     counters_a_before = client.get("/llm-call-counters").json()
-    with patch("orchestrator.main.memory_recall", return_value=None):
+    with patch("memory_engine.memory.recall", return_value=None), patch("orchestrator.main.memory_recall", return_value=None):
         client.post("/incidents", json=req_1)
 
-    # Wait for awaiting_approval state
-    poll_start = time.time()
-    awaiting_state = None
-    while time.time() - poll_start < 45.0:
-        res = client.get(f"/incidents/{inc_id_1}").json()
-        st = res.get("status")
-        if st == "awaiting_approval":
-            awaiting_state = res
-            break
-        elif st == "failed":
-            print(f"  -> Incident entered FAILED state! Event Log: {json.dumps(res.get('event_log'), indent=2)}")
-            break
-        time.sleep(0.5)
+        # Wait for awaiting_approval state
+        poll_start = time.time()
+        awaiting_state = None
+        while time.time() - poll_start < 45.0:
+            res = client.get(f"/incidents/{inc_id_1}").json()
+            st = res.get("status")
+            if st == "awaiting_approval":
+                awaiting_state = res
+                break
+            elif st == "failed":
+                print(f"  -> Incident entered FAILED state! Event Log: {json.dumps(res.get('event_log'), indent=2)}")
+                break
+            time.sleep(0.5)
 
     t_creation_to_approval = time.time() - trigger_start
     counters_a_after = client.get("/llm-call-counters").json()
