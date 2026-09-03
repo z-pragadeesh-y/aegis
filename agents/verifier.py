@@ -62,37 +62,42 @@ def verify_remediation(action_type: str, before_metrics: Dict[str, Any], after_m
         f"Determine if the incident is resolved. Output JSON matching the schema."
     )
 
-    max_attempts = 2
+    models_to_try = ["openai/gpt-oss-20b", "openai/gpt-oss-120b", "qwen/qwen3.6-27b"]
     last_exception = None
     parsed_res = None
 
-    for attempt in range(max_attempts):
-        try:
-            completion = client.chat.completions.create(
-                model="openai/gpt-oss-20b",
-                messages=[
-                    {"role": "system", "content": "You are an SRE Verifier agent. Output JSON matching the schema."},
-                    {"role": "user", "content": prompt}
-                ],
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "verifier_result",
-                        "strict": True,
-                        "schema": VERIFIER_SCHEMA
-                    }
-                },
-                max_tokens=1000
-            )
+    for model_name in models_to_try:
+        for attempt in range(2):
+            try:
+                completion = client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": "You are an SRE Verifier agent. Output JSON matching the schema."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "verifier_result",
+                            "strict": True,
+                            "schema": VERIFIER_SCHEMA
+                        }
+                    },
+                    max_tokens=1000
+                )
 
-            content = completion.choices[0].message.content
-            parsed = json.loads(content)
-            parsed_res = VerifierResult(**parsed)
+                content = completion.choices[0].message.content
+                parsed = json.loads(content)
+                parsed_res = VerifierResult(**parsed)
+                break
+
+            except Exception as e:
+                last_exception = e
+                if "429" in str(e) or "rate_limit" in str(e).lower():
+                    break
+                time.sleep(0.5)
+        if parsed_res:
             break
-        except Exception as e:
-            last_exception = e
-            if attempt < max_attempts - 1:
-                time.sleep(1.0)
 
     if not parsed_res:
         raise RuntimeError(f"Verifier Agent failed after {max_attempts} attempts: {last_exception}")

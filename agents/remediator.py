@@ -147,40 +147,42 @@ def propose_remediation(diagnosis_dict: Dict[str, Any], desired_action_type: Opt
         f"Provide action_type, target, and reasoning."
     )
 
-    max_attempts = 2
+    models_to_try = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b"]
     last_exception = None
 
-    for attempt in range(max_attempts):
-        try:
-            completion = client.chat.completions.create(
-                model="openai/gpt-oss-120b",
-                messages=[
-                    {"role": "system", "content": "You are a specialist SRE Remediator agent. Output JSON matching the schema."},
-                    {"role": "user", "content": prompt}
-                ],
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "remediator_action",
-                        "strict": True,
-                        "schema": remediator_schema
-                    }
-                },
-                max_tokens=1000
-            )
+    for model_name in models_to_try:
+        for attempt in range(2):
+            try:
+                completion = client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": "You are a specialist SRE Remediator agent. Output JSON matching the schema."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "remediator_action",
+                            "strict": True,
+                            "schema": remediator_schema
+                        }
+                    },
+                    max_tokens=1000
+                )
 
-            content = completion.choices[0].message.content
-            parsed = json.loads(content)
-            
-            action = RemediatorAction(**parsed)
-            return action
+                content = completion.choices[0].message.content
+                parsed = json.loads(content)
+                
+                action = RemediatorAction(**parsed)
+                return action
 
-        except Exception as e:
-            last_exception = e
-            if attempt < max_attempts - 1:
-                time.sleep(1.0)
+            except Exception as e:
+                last_exception = e
+                if "429" in str(e) or "rate_limit" in str(e).lower():
+                    break # Switch to next model immediately on rate limit
+                time.sleep(0.5)
 
-    raise RuntimeError(f"Remediator Agent failed after {max_attempts} attempts: {last_exception}")
+    raise RuntimeError(f"Remediator Agent failed across all fallback models: {last_exception}")
 
 def submit_to_policy_gateway(action: RemediatorAction, gateway_url: str = GATEWAY_URL) -> Dict[str, Any]:
     """

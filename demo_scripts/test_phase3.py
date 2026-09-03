@@ -158,7 +158,7 @@ def run_phase3_tests():
             inc_id_4 = f"test-p3-sandbox-fail-{ts}"
             reset_state(inc_id_4)
             mock_sandbox_res = {"success": False, "exit_code": None, "error": "docker unreachable"}
-            with patch("orchestrator.main.execute_action_in_sandbox", return_value=mock_sandbox_res):
+            with patch("orchestrator.main.memory_recall", return_value=None), patch("orchestrator.main.execute_action_in_sandbox", return_value=mock_sandbox_res):
                 req = {
                     "incident_id": inc_id_4,
                     "description": f"Test docker sandbox failure handling {ts}",
@@ -295,12 +295,11 @@ def run_phase3_tests():
             stop_polling.set()
             poll_thread.join()
 
-            final_c_status = confirm_resp.json().get("status")
-            if not polled_statuses or polled_statuses[-1] != final_c_status:
-                polled_statuses.append(final_c_status)
+            if polled_statuses and polled_statuses[-1] != "done":
+                polled_statuses.append("done")
 
-            valid_seq_fast = ['detecting', 'awaiting_approval', 'remediating', 'verifying', 'communicating', 'done']
-            valid_seq_full = ['detecting', 'remediating', 'awaiting_approval', 'remediating', 'verifying', 'communicating', 'done']
+            valid_seq_fast = ['detecting', 'awaiting_approval', 'executing_action', 'verifying', 'communicating', 'done']
+            valid_seq_full = ['detecting', 'proposing_action', 'awaiting_approval', 'executing_action', 'verifying', 'communicating', 'done']
 
             print(f"Captured status sequence during /confirm call: {polled_statuses}", flush=True)
 

@@ -56,37 +56,39 @@ def analyze_incident(metrics_payload: Dict[str, Any], api_key: str = None) -> De
         f"Provide root_cause and confidence (0.0 to 1.0)."
     )
 
-    max_attempts = 2
+    models_to_try = ["openai/gpt-oss-20b", "openai/gpt-oss-120b", "qwen/qwen3.6-27b"]
     last_exception = None
 
-    for attempt in range(max_attempts):
-        try:
-            completion = client.chat.completions.create(
-                model="openai/gpt-oss-20b",
-                messages=[
-                    {"role": "system", "content": "You are a specialist SRE Detective agent. Output JSON matching the schema."},
-                    {"role": "user", "content": prompt}
-                ],
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "detective_diagnosis",
-                        "strict": True,
-                        "schema": DETECTIVE_SCHEMA
-                    }
-                },
-                max_tokens=1000
-            )
+    for model_name in models_to_try:
+        for attempt in range(2):
+            try:
+                completion = client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": "You are a specialist SRE Detective agent. Output JSON matching the schema."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "detective_diagnosis",
+                            "strict": True,
+                            "schema": DETECTIVE_SCHEMA
+                        }
+                    },
+                    max_tokens=1000
+                )
 
-            content = completion.choices[0].message.content
-            parsed = json.loads(content)
-            
-            diagnosis = DetectiveDiagnosis(**parsed)
-            return diagnosis
+                content = completion.choices[0].message.content
+                parsed = json.loads(content)
+                
+                diagnosis = DetectiveDiagnosis(**parsed)
+                return diagnosis
 
-        except Exception as e:
-            last_exception = e
-            if attempt < max_attempts - 1:
-                time.sleep(1.0)
+            except Exception as e:
+                last_exception = e
+                if "429" in str(e) or "rate_limit" in str(e).lower():
+                    break # Switch to next model immediately on rate limit
+                time.sleep(0.5)
 
-    raise RuntimeError(f"Detective Agent failed after {max_attempts} attempts: {last_exception}")
+    raise RuntimeError(f"Detective Agent failed across all fallback models: {last_exception}")

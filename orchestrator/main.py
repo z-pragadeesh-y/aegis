@@ -26,7 +26,9 @@ GATEWAY_URL = os.getenv("POLICY_GATEWAY_URL", "http://127.0.0.1:8001")
 
 class IncidentStatus(str, Enum):
     detecting = "detecting"
+    proposing_action = "proposing_action"
     awaiting_approval = "awaiting_approval"
+    executing_action = "executing_action"
     remediating = "remediating"
     verifying = "verifying"
     communicating = "communicating"
@@ -111,31 +113,35 @@ main_event_loop = None
 
 def notify_websocket_listeners(state: IncidentState, entry: str):
     global main_event_loop
-    state_dump = state.model_dump()
-    payload = {
-        "event_type": "log_entry",
-        "incident_id": state.incident_id,
-        "status": state.status.value if isinstance(state.status, IncidentStatus) else str(state.status),
-        "new_log": entry,
-        "state": state_dump
-    }
-    global_payload = {
-        "event_type": "incident_updated",
-        "incident_id": state.incident_id,
-        "status": state.status.value if isinstance(state.status, IncidentStatus) else str(state.status),
-        "description": state.description,
-        "updated_at": state.updated_at
-    }
-
     try:
-        loop = asyncio.get_running_loop()
-        main_event_loop = loop
-        loop.create_task(manager.broadcast_incident(state.incident_id, payload))
-        loop.create_task(manager.broadcast_global(global_payload))
-    except RuntimeError:
-        if main_event_loop and main_event_loop.is_running():
-            asyncio.run_coroutine_threadsafe(manager.broadcast_incident(state.incident_id, payload), main_event_loop)
-            asyncio.run_coroutine_threadsafe(manager.broadcast_global(global_payload), main_event_loop)
+        state_dump = state.model_dump()
+        payload = {
+            "event_type": "log_entry",
+            "incident_id": state.incident_id,
+            "status": state.status.value if isinstance(state.status, IncidentStatus) else str(state.status),
+            "new_log": entry,
+            "state": state_dump
+        }
+        global_payload = {
+            "event_type": "incident_updated",
+            "incident_id": state.incident_id,
+            "status": state.status.value if isinstance(state.status, IncidentStatus) else str(state.status),
+            "description": state.description,
+            "updated_at": state.updated_at
+        }
+
+        try:
+            loop = asyncio.get_running_loop()
+            main_event_loop = loop
+            if loop.is_running():
+                loop.create_task(manager.broadcast_incident(state.incident_id, payload))
+                loop.create_task(manager.broadcast_global(global_payload))
+        except RuntimeError:
+            if main_event_loop and not main_event_loop.is_closed() and main_event_loop.is_running():
+                asyncio.run_coroutine_threadsafe(manager.broadcast_incident(state.incident_id, payload), main_event_loop)
+                asyncio.run_coroutine_threadsafe(manager.broadcast_global(global_payload), main_event_loop)
+    except Exception:
+        pass
 
 def log_event(state: IncidentState, message: str):
     timestamp = datetime.now(timezone.utc).isoformat()
@@ -155,8 +161,8 @@ def execute_remediation_and_verify(state: IncidentState, start_time: Optional[fl
     action_dict = state.proposed_action or {}
     action_type = action_dict.get("action_type", "")
 
-    # 1. Set status to remediating
-    state.status = IncidentStatus.remediating
+    # 1. Set status to executing_action
+    state.status = IncidentStatus.executing_action
     log_event(state, f"Starting sandboxed execution for action '{action_type}'")
 
     # 2. Pre-execution metrics snapshot
@@ -297,7 +303,7 @@ def process_incident_flow(state: IncidentState, desired_action_type: Optional[st
             return
 
         # 4. Call Remediator Agent
-        state.status = IncidentStatus.remediating
+        state.status = IncidentStatus.proposing_action
         log_event(state, "Invoking Remediator Agent (openai/gpt-oss-120b)")
         try:
             llm_call_counters["remediator_calls"] += 1
@@ -396,7 +402,8 @@ def confirm_incident_approval(incident_id: str):
 
         if result == "approved":
             log_event(state, f"Policy Gateway confirmed approval for token '{token}'")
-            execute_remediation_and_verify(state)
+            thread = threading.Thread(target=execute_remediation_and_verify, args=(state,))
+            thread.start()
         elif result == "expired":
             log_event(state, f"Approval token '{token}' has expired")
             state.status = IncidentStatus.failed

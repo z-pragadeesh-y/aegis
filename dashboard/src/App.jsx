@@ -269,7 +269,7 @@ function App() {
     if (!incidentState) return 'idle'
 
     if (agentName === 'Orchestrator') {
-      if (['detecting', 'remediating', 'verifying', 'communicating'].includes(status)) return 'active'
+      if (['detecting', 'proposing_action', 'awaiting_approval', 'executing_action', 'remediating', 'verifying', 'communicating'].includes(status)) return 'active'
       if (status === 'awaiting_approval') return 'awaiting'
       if (status === 'done') return 'done'
       if (status === 'failed') return 'failed'
@@ -285,7 +285,7 @@ function App() {
 
     if (agentName === 'Remediator') {
       if (isFastPath) return 'skipped'
-      if (status === 'remediating' && !incidentState.proposed_action) return 'active'
+      if (status === 'proposing_action') return 'active'
       if (incidentState.proposed_action) return 'done'
       return 'idle'
     }
