@@ -2,6 +2,7 @@ import sys
 import os
 import time
 import json
+from unittest.mock import patch
 import httpx
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -27,6 +28,11 @@ def run_single_rehearsal_pass(run_index: int):
     reset_state(inc_id_1)
 
     print(f"\n[STEP A] Triggering Primary Incident '{inc_id_1}' (cpu_pressure / restart_service)...")
+    # Run-specific description guarantees Step A is a genuine Cold-Start for each run,
+    # and Step C is a genuine Fast-Path recall of Step A within the same run.
+    run_desc = f"Connection pool exhaustion and high CPU contention on checkout worker threads in cluster run-{run_index}-{ts}"
+
+    print(f"\n[STEP A] Triggering Primary Incident '{inc_id_1}' (cpu_pressure / restart_service)...")
     trigger_start = time.time()
     
     # Inject fault into target system
@@ -37,10 +43,14 @@ def run_single_rehearsal_pass(run_index: int):
 
     req_1 = {
         "incident_id": inc_id_1,
-        "description": "Connection pool exhaustion and high CPU contention on checkout worker threads",
+        "description": run_desc,
         "desired_action_type": "restart_service"
     }
-    client.post("/incidents", json=req_1)
+
+    # Step A: Force Cold-Start Full Reasoning Path (1 Detective + 1 Remediator call) by patching memory_recall to None
+    counters_a_before = client.get("/llm-call-counters").json()
+    with patch("orchestrator.main.memory_recall", return_value=None):
+        client.post("/incidents", json=req_1)
 
     # Wait for awaiting_approval state
     poll_start = time.time()
@@ -57,6 +67,10 @@ def run_single_rehearsal_pass(run_index: int):
         time.sleep(0.5)
 
     t_creation_to_approval = time.time() - trigger_start
+    counters_a_after = client.get("/llm-call-counters").json()
+    det_a_calls = counters_a_after.get("detective_calls", 0) - counters_a_before.get("detective_calls", 0)
+    rem_a_calls = counters_a_after.get("remediator_calls", 0) - counters_a_before.get("remediator_calls", 0)
+
     if awaiting_state is None:
         final_check = client.get(f"/incidents/{inc_id_1}").json()
         print(f"  -> Polling timed out/failed. Final Status: {final_check.get('status')}")
@@ -64,6 +78,7 @@ def run_single_rehearsal_pass(run_index: int):
     assert awaiting_state is not None, f"Run #{run_index} Primary incident failed to reach awaiting_approval"
     token_1 = awaiting_state.get("approval_token")
     print(f"  -> Reached 'awaiting_approval' in {t_creation_to_approval:.2f}s | Token: {token_1}")
+    print(f"  -> Step A LLM Calls Executed: Detective={det_a_calls}, Remediator={rem_a_calls}")
     print(f"  -> Detective Root Cause: {repr(((awaiting_state.get('diagnosis') or {}).get('root_cause', '')).encode('ascii', 'ignore').decode('ascii')[:80])}")
 
     # Step 2: Simulate Human Approval Click (POST /incidents/{inc_id}/confirm)
@@ -96,7 +111,7 @@ def run_single_rehearsal_pass(run_index: int):
     fastpath_start = time.time()
     req_2 = {
         "incident_id": inc_id_2,
-        "description": "Connection pool exhaustion and high CPU contention on checkout worker threads",
+        "description": run_desc,
         "desired_action_type": "restart_service"
     }
 
@@ -167,6 +182,7 @@ def run_single_rehearsal_pass(run_index: int):
         "run_index": run_index,
         "total_wall_clock_seconds": round(total_run_time, 2),
         "primary_trigger_to_approval_seconds": round(t_creation_to_approval, 2),
+        "primary_step_a_llm_calls": f"Detective={det_a_calls}, Remediator={rem_a_calls}",
         "primary_confirm_http_latency_ms": round(confirm_http_latency_ms, 2),
         "primary_confirm_to_done_seconds": round(t_approval_to_done, 2),
         "fastpath_trigger_to_approval_seconds": round(t_fastpath_to_approval, 2),

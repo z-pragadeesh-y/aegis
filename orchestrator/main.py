@@ -228,7 +228,7 @@ def execute_remediation_and_verify(state: IncidentState, start_time: Optional[fl
 
         pre_cpu = before_metrics.get("cpu_percent", 0.0)
         pre_err = before_metrics.get("error_rate", 0.0)
-        fault_sig = f"Description: {state.description} | Root Cause: {root_cause} | Metrics: status={before_metrics.get('status')}, cpu={pre_cpu}%, error_rate={pre_err}"
+        fault_sig = f"Description: {state.description} | Metrics: status={before_metrics.get('status')}, cpu={pre_cpu}%, error_rate={pre_err}"
 
         try:
             memory_remember(
@@ -266,7 +266,7 @@ def process_incident_flow(state: IncidentState, desired_action_type: Optional[st
     # 2. Check Memory Engine Fast Path
     pre_cpu = metrics.get("cpu_percent", 0.0)
     pre_err = metrics.get("error_rate", 0.0)
-    fault_sig = f"Description: {state.description} | Root Cause: {state.description} | Metrics: status={metrics.get('status')}, cpu={pre_cpu}%, error_rate={pre_err}"
+    fault_sig = f"Description: {state.description} | Metrics: status={metrics.get('status')}, cpu={pre_cpu}%, error_rate={pre_err}"
 
     recalled_memory = None
     try:
