@@ -64,14 +64,16 @@ graph TD
 
 ## 4. Architectural Inspirations & Reference Repositories
 
-Aegis integrates design patterns synthesized from six foundational open-source engineering paradigms:
+Aegis is built upon architectural design patterns synthesized from six foundational open-source reference repositories (documented in Appendix A of the Aegis PRD):
 
-1. **Meta-GPT / AutoGen**: Decoupled specialist agent roles with strict JSON-Schema response contracts.
-2. **Chaos Mesh**: Industry-standard fault injection simulation (`cpu_pressure`, `memory_pressure`, `latency_injection`, `packet_loss`, `pod_failure`).
-3. **OpenPolicyAgent (OPA)**: Centralized, declarative security and governance rule evaluations for automated system actions.
-4. **LangGraph / State-Machine Orchestration**: Explicit `IncidentStatus` state lifecycle with deterministic transitions and error-recovery paths.
-5. **Qdrant Vector DB**: High-performance vector embeddings for incident fault signature indexing and semantic similarity matching.
-6. **Docker Engine API**: Ephemeral containerized sandbox isolation for safe tool execution.
+| Repository | Core Idea Taken | Where It Appears in Aegis |
+| :--- | :--- | :--- |
+| **`NousResearch/hermes-agent`** | Self-improving agent that decomposes tasks, delegates to subagents, and writes reusable “skills” after solving a problem. | Orchestrator's task decomposition and delegation model; the skill-memory concept feeds the runbook idea. |
+| **`CopilotKit/OpenBot`** | Isolated per-agent execution sandboxes plus a rule-based policy gateway that fails closed and audits everything. | Policy Gateway design; Sandboxed Execution layer; Audit Log philosophy. |
+| **`milind-soni/OpenMausBot`** | Multiple distinct AI “personalities,” each with its own role, memory, and permission broker, running locally. | The multi-specialist-agent roster concept (Detective / Remediator / Verifier / Communicator). |
+| **`jaredrhod/ai-visualizer`** | A reactive full-screen visual “face” that animates in sync with an AI agent's live state. | Mission Control Dashboard's live agent-state visualization. |
+| **`rexdivakar/HippocampAI`** | Production-grade memory engine: structured remember/recall, knowledge graph, hybrid retrieval, sleep-phase consolidation. | Shared Memory Engine layer in full. |
+| **`boss477/jarvis`** | A working confirmation-gate (stage $\rightarrow$ confirm $\rightarrow$ execute) and a fast-path alias/plan router for latency, plus a live status overlay. | Policy Gateway's approval-token mechanism; Orchestrator's fast-path router; dashboard state overlay. |
 
 ---
 
