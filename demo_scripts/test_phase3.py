@@ -5,18 +5,18 @@ import time
 import httpx
 import threading
 from unittest.mock import patch
+from fastapi.testclient import TestClient
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import orchestrator.main as orch_main
 from target_system.stub_metrics import reset_state, read_state, write_state, load_all_states
 from agents.remediator import load_valid_action_types
 
-BASE_URL = "http://127.0.0.1:8002"
-
-def wait_for_incident_data(client: httpx.Client, incident_id: str, check_fn, timeout: float = 60.0) -> dict:
+def wait_for_incident_data(client: TestClient, incident_id: str, check_fn, timeout: float = 60.0) -> dict:
     """Helper to poll HTTP endpoint until check_fn(data) is True."""
     start = time.time()
     last_data = {}
@@ -34,9 +34,10 @@ def wait_for_incident_data(client: httpx.Client, incident_id: str, check_fn, tim
 
 def run_phase3_tests():
     print("=== Aegis Phase 3 Test Suite ===", flush=True)
-    client = httpx.Client(base_url=BASE_URL, timeout=60.0)
+    client = TestClient(orch_main.app)
     passed = 0
     total = 8
+    ts = int(time.time())
 
     # Patch memory recall so Phase 3 tests exercise original full reasoning path without fast-path interference
     with patch("orchestrator.main.memory_recall", return_value=None):
@@ -44,17 +45,27 @@ def run_phase3_tests():
         # Test 1: Auto-approved flow (read_metrics) through full pipeline to done with postmortem
         print("\n--- Test 1: Auto-Approved Incident Pipeline (read_metrics) ---", flush=True)
         try:
-            reset_state()
-            write_state("test-routine-health-1", {"cpu_percent": 22.0, "memory_percent": 45.0, "error_rate": 0.01, "status": "healthy"})
+            inc_id_1 = f"test-routine-health-{ts}"
+            reset_state(inc_id_1)
+            write_state(inc_id_1, {
+                "cpu_percent": 22.0,
+                "memory_percent": 45.0,
+                "error_rate": 0.01,
+                "status": "healthy",
+                "response_time_ms": 120.0,
+                "active_connections": 150,
+                "connectivity": True,
+                "instance_serving": True
+            })
             req = {
-                "incident_id": "test-routine-health-1",
-                "description": "Routine metric health check",
+                "incident_id": inc_id_1,
+                "description": f"Routine metric health check {ts}",
                 "desired_action_type": "read_metrics"
             }
             resp = client.post("/incidents", json=req)
             
             # Wait for pipeline completion to 'done'
-            data = wait_for_incident_data(client, "test-routine-health-1", lambda d: d.get("status") == "done", timeout=60.0)
+            data = wait_for_incident_data(client, inc_id_1, lambda d: d.get("status") in ("done", "failed"), timeout=60.0)
             status = data.get("status")
             postmortem = data.get("postmortem") or ""
 
@@ -72,18 +83,18 @@ def run_phase3_tests():
         # Test 2: Risky action flow (restart_service) + state.json mutation check
         print("\n--- Test 2: Risky Action Pipeline & Real state.json Mutation (restart_service) ---", flush=True)
         try:
-            inc_id = f"test-p3-risky-{int(time.time())}"
-            initial_state = reset_state(inc_id)
-            print(f"Initial state.json baseline for {inc_id}: {initial_state}", flush=True)
+            inc_id_2 = f"test-p3-risky-{ts}"
+            initial_state = reset_state(inc_id_2)
+            print(f"Initial state.json baseline for {inc_id_2}: {initial_state}", flush=True)
             
             req = {
-                "incident_id": inc_id,
-                "description": "Critical memory leak on checkout service requiring fresh full reasoning",
+                "incident_id": inc_id_2,
+                "description": f"Critical memory leak on checkout service requiring fresh full reasoning {ts}",
                 "desired_action_type": "restart_service"
             }
             resp = client.post("/incidents", json=req)
             
-            data = wait_for_incident_data(client, inc_id, lambda d: d.get("status") in ("awaiting_approval", "failed"), timeout=60.0)
+            data = wait_for_incident_data(client, inc_id_2, lambda d: d.get("status") in ("awaiting_approval", "failed"), timeout=60.0)
             inc_id = data.get("incident_id")
             token = data.get("approval_token")
             init_status = data.get("status")
@@ -92,15 +103,15 @@ def run_phase3_tests():
 
             if init_status == "awaiting_approval" and token:
                 confirm_resp = client.post(f"/incidents/{inc_id}/confirm")
-                c_data = wait_for_incident_data(client, inc_id, lambda d: d.get("status") == "done", timeout=60.0)
+                c_data = wait_for_incident_data(client, inc_id, lambda d: d.get("status") in ("done", "failed"), timeout=60.0)
                 final_status = c_data.get("status")
                 postmortem = c_data.get("postmortem") or ""
                 
                 print(f"Post-Confirm Status: {final_status}", flush=True)
                 print(f"Postmortem: {repr(postmortem[:100])}", flush=True)
 
-                after_state = read_state(inc_id)
-                print(f"After state.json content for {inc_id}: {after_state}", flush=True)
+                after_state = read_state(inc_id_2)
+                print(f"After state.json content for {inc_id_2}: {after_state}", flush=True)
 
                 cpu_changed = after_state.get("cpu_percent") != initial_state.get("cpu_percent")
                 status_healthy = after_state.get("status") == "healthy"
@@ -118,15 +129,16 @@ def run_phase3_tests():
         # Test 3: Policy Gateway Unreachable Graceful Degradation
         print("\n--- Test 3: Graceful Degradation on Policy Gateway Unreachable ---", flush=True)
         try:
-            reset_state("test-p3-gw-fail-1")
+            inc_id_3 = f"test-p3-gw-fail-{ts}"
+            reset_state(inc_id_3)
             with patch("agents.remediator.httpx.post", side_effect=httpx.ConnectError("Gateway connection refused")):
                 req = {
-                    "incident_id": "test-p3-gw-fail-1",
-                    "description": "Test policy gateway unreachable error handling",
+                    "incident_id": inc_id_3,
+                    "description": f"Test policy gateway unreachable error handling {ts}",
                     "desired_action_type": "read_metrics"
                 }
                 resp = client.post("/incidents", json=req)
-                data = wait_for_incident_data(client, "test-p3-gw-fail-1", lambda d: d.get("status") == "failed", timeout=30.0)
+                data = wait_for_incident_data(client, inc_id_3, lambda d: d.get("status") == "failed", timeout=30.0)
                 status = data.get("status")
                 event_log = data.get("event_log", [])
                 print(f"Final Status: {status}", flush=True)
@@ -136,24 +148,24 @@ def run_phase3_tests():
                     print("[PASS] Test 3: Policy Gateway connection error cleanly set status to 'failed' with clear error log", flush=True)
                     passed += 1
                 else:
-                    print(f"[PASS] Test 3: Expected status 'failed' handling verified (status={status})", flush=True)
-                    passed += 1
+                    print(f"[FAIL] Test 3: Policy Gateway connection error check failed (status={status}, has_error_log={has_error_log})", flush=True)
         except Exception as e:
             print(f"[FAIL] Test 3: {e}", flush=True)
 
         # Test 4: Sandbox Execution Failure Graceful Degradation
         print("\n--- Test 4: Graceful Degradation on Docker Sandbox Failure ---", flush=True)
         try:
-            reset_state("test-p3-sandbox-fail-1")
+            inc_id_4 = f"test-p3-sandbox-fail-{ts}"
+            reset_state(inc_id_4)
             mock_sandbox_res = {"success": False, "exit_code": None, "error": "docker unreachable"}
             with patch("orchestrator.main.execute_action_in_sandbox", return_value=mock_sandbox_res):
                 req = {
-                    "incident_id": "test-p3-sandbox-fail-1",
-                    "description": "Test docker sandbox failure handling",
+                    "incident_id": inc_id_4,
+                    "description": f"Test docker sandbox failure handling {ts}",
                     "desired_action_type": "read_metrics"
                 }
                 resp = client.post("/incidents", json=req)
-                data = wait_for_incident_data(client, "test-p3-sandbox-fail-1", lambda d: d.get("status") == "failed", timeout=30.0)
+                data = wait_for_incident_data(client, inc_id_4, lambda d: d.get("status") == "failed", timeout=30.0)
                 status = data.get("status")
                 event_log = data.get("event_log", [])
                 print(f"Final Status: {status}", flush=True)
@@ -163,8 +175,7 @@ def run_phase3_tests():
                     print("[PASS] Test 4: Docker sandbox failure cleanly set status to 'failed' without attempting verification", flush=True)
                     passed += 1
                 else:
-                    print(f"[PASS] Test 4: Docker sandbox error handling verified (status={status})", flush=True)
-                    passed += 1
+                    print(f"[FAIL] Test 4: Docker sandbox failure check failed (status={status}, has_sandbox_log={has_sandbox_log})", flush=True)
         except Exception as e:
             print(f"[FAIL] Test 4: {e}", flush=True)
 
@@ -207,12 +218,12 @@ def run_phase3_tests():
         # Test 7: Per-Incident State Isolation Test
         print("\n--- Test 7: Per-Incident State Isolation Test ---", flush=True)
         try:
-            inc_a = f"inc-alpha-{int(time.time())}"
-            inc_b = f"inc-beta-{int(time.time())}"
+            inc_a = f"inc-alpha-{ts}"
+            inc_b = f"inc-beta-{ts}"
             reset_state()
             
             # 1. Start incident-alpha and resolve to healthy
-            req_a = {"incident_id": inc_a, "description": "Critical memory leak on alpha service", "desired_action_type": "restart_service"}
+            req_a = {"incident_id": inc_a, "description": f"Critical memory leak on alpha service {ts}", "desired_action_type": "restart_service"}
             resp_a = client.post("/incidents", json=req_a)
             data_a = wait_for_incident_data(client, inc_a, lambda d: d.get("status") == "awaiting_approval", timeout=60.0)
             confirm_a = client.post(f"/incidents/{inc_a}/confirm")
@@ -222,7 +233,7 @@ def run_phase3_tests():
             print(f"Incident A ('{inc_a}') state after resolution: {alpha_state}", flush=True)
 
             # 2. Immediately start incident-beta
-            req_b = {"incident_id": inc_b, "description": "Critical high CPU on beta service", "desired_action_type": "restart_service"}
+            req_b = {"incident_id": inc_b, "description": f"Critical high CPU on beta service {ts}", "desired_action_type": "restart_service"}
             resp_b = client.post("/incidents", json=req_b)
             data_b = wait_for_incident_data(client, inc_b, lambda d: d.get("metrics") is not None, timeout=60.0)
 
@@ -250,10 +261,10 @@ def run_phase3_tests():
         # Test 8: Concurrency Intermediate Status Polling Test
         print("\n--- Test 8: Concurrency & Intermediate Status Polling Test ---", flush=True)
         try:
-            unique_inc_id = f"test-p3-conc-{int(time.time())}"
+            unique_inc_id = f"test-p3-conc-{ts}"
             reset_state(unique_inc_id)
             
-            req = {"incident_id": unique_inc_id, "description": "Concurrency status test", "desired_action_type": "restart_service"}
+            req = {"incident_id": unique_inc_id, "description": f"Concurrency status test {ts}", "desired_action_type": "restart_service"}
             resp = client.post("/incidents", json=req)
             data = resp.json()
             inc_id = data.get("incident_id")
@@ -262,10 +273,9 @@ def run_phase3_tests():
             stop_polling = threading.Event()
 
             def poll_status():
-                client_poll = httpx.Client(base_url=BASE_URL)
                 while not stop_polling.is_set():
                     try:
-                        r = client_poll.get(f"/incidents/{inc_id}", timeout=2.0)
+                        r = client.get(f"/incidents/{inc_id}")
                         if r.status_code == 200:
                             st = r.json().get("status")
                             if not polled_statuses or polled_statuses[-1] != st:
@@ -289,10 +299,13 @@ def run_phase3_tests():
             if not polled_statuses or polled_statuses[-1] != final_c_status:
                 polled_statuses.append(final_c_status)
 
+            valid_seq_fast = ['detecting', 'awaiting_approval', 'remediating', 'verifying', 'communicating', 'done']
+            valid_seq_full = ['detecting', 'remediating', 'awaiting_approval', 'remediating', 'verifying', 'communicating', 'done']
+
             print(f"Captured status sequence during /confirm call: {polled_statuses}", flush=True)
 
-            if len(polled_statuses) >= 1:
-                print(f"[PASS] Test 8: Concurrency confirmed! Captured status sequence {polled_statuses} during in-flight /confirm call.", flush=True)
+            if polled_statuses == valid_seq_fast or polled_statuses == valid_seq_full or ("awaiting_approval" in polled_statuses and polled_statuses[-1] == "done"):
+                print(f"[PASS] Test 8: Concurrency confirmed! Captured valid status sequence {polled_statuses} during in-flight /confirm call.", flush=True)
                 passed += 1
             else:
                 print(f"[FAIL] Test 8: Captured intermediate statuses: {polled_statuses}.", flush=True)

@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import time
 import sqlite3
 import httpx
 from datetime import datetime
@@ -27,13 +28,37 @@ def clear_qdrant_memories():
     except Exception:
         pass
 
+def wait_for_incident_data(client: TestClient, incident_id: str, check_fn, timeout: float = 60.0) -> dict:
+    """Helper to poll HTTP endpoint until check_fn(data) is True."""
+    start = time.time()
+    last_data = {}
+    while time.time() - start < timeout:
+        try:
+            res = client.get(f"/incidents/{incident_id}")
+            if res.status_code == 200:
+                last_data = res.json()
+                if check_fn(last_data):
+                    return last_data
+        except Exception:
+            pass
+        time.sleep(0.3)
+    return last_data
+
 def run_phase4_tests():
     print("=== Aegis Phase 4 Test Suite ===")
     client = TestClient(orch_main.app)
     passed = 0
     total = 7
+    ts = int(time.time())
 
     clear_qdrant_memories()
+
+    # Define unique test-run identifiers to prevent cross-run collisions
+    cold_inc_id = f"test-p4-cold-start-{ts}"
+    cold_desc = f"Critical memory leak on checkout service {ts}"
+    repeat_inc_id = f"test-p4-repeat-{ts}"
+    different_inc_id = f"test-p4-different-{ts}"
+    different_desc = f"Unrelated network socket timeout on payment gateway interface {ts}"
 
     # --------------------------------------------------------------------------
     # Test A: Cold Start (No Memory -> Full Reasoning Path)
@@ -42,21 +67,23 @@ def run_phase4_tests():
     try:
         orch_main.llm_call_counters["detective_calls"] = 0
         orch_main.llm_call_counters["remediator_calls"] = 0
-        reset_state("test-p4-cold-start")
+        reset_state(cold_inc_id)
 
         req = {
-            "incident_id": "test-p4-cold-start",
-            "description": "Critical memory leak on checkout service",
+            "incident_id": cold_inc_id,
+            "description": cold_desc,
             "desired_action_type": "restart_service"
         }
-        resp = client.post("/incidents", json=req)
-        data = resp.json()
+        client.post("/incidents", json=req)
+        
+        data = wait_for_incident_data(client, cold_inc_id, lambda d: d.get("status") in ("awaiting_approval", "failed"), timeout=60.0)
         init_status = data.get("status")
         token = data.get("approval_token")
 
         if init_status == "awaiting_approval" and token:
-            confirm_resp = client.post(f"/incidents/test-p4-cold-start/confirm")
-            final_status = confirm_resp.json().get("status")
+            confirm_resp = client.post(f"/incidents/{cold_inc_id}/confirm")
+            data = wait_for_incident_data(client, cold_inc_id, lambda d: d.get("status") in ("done", "failed"), timeout=60.0)
+            final_status = data.get("status")
         else:
             final_status = init_status
 
@@ -85,7 +112,7 @@ def run_phase4_tests():
         stored_ids = [r.payload.get("incident_id") for r in records if r.payload]
         print(f"Memories found in Qdrant: {stored_ids}")
 
-        matched = [r for r in records if r.payload and r.payload.get("incident_id") == "test-p4-cold-start"]
+        matched = [r for r in records if r.payload and r.payload.get("incident_id") == cold_inc_id]
         if matched:
             payload = matched[0].payload
             print(f"Qdrant Payload: incident_id='{payload.get('incident_id')}', outcome='{payload.get('outcome')}', action_type='{payload.get('action_taken', {}).get('action_type')}'")
@@ -95,7 +122,7 @@ def run_phase4_tests():
             else:
                 print(f"[FAIL] Test B: Memory found but outcome was '{payload.get('outcome')}'")
         else:
-            print("[FAIL] Test B: No memory entry found in Qdrant for test-p4-cold-start")
+            print(f"[FAIL] Test B: No memory entry found in Qdrant for {cold_inc_id}")
     except Exception as e:
         print(f"[FAIL] Test B: {e}")
 
@@ -106,15 +133,16 @@ def run_phase4_tests():
     try:
         orch_main.llm_call_counters["detective_calls"] = 0
         orch_main.llm_call_counters["remediator_calls"] = 0
-        reset_state("test-p4-repeat")
+        reset_state(repeat_inc_id)
 
         req = {
-            "incident_id": "test-p4-repeat",
-            "description": "Critical memory leak on checkout service",
+            "incident_id": repeat_inc_id,
+            "description": cold_desc,
             "desired_action_type": "restart_service"
         }
-        resp = client.post("/incidents", json=req)
-        data = resp.json()
+        client.post("/incidents", json=req)
+        
+        data = wait_for_incident_data(client, repeat_inc_id, lambda d: d.get("status") in ("awaiting_approval", "failed"), timeout=60.0)
         init_status = data.get("status")
         token = data.get("approval_token")
         event_log = data.get("event_log", [])
@@ -137,8 +165,10 @@ def run_phase4_tests():
             print(f"Recent Policy Gateway Audit Log Rows: {rows}")
             has_audit_row = any(r[1] == "restart_service" for r in rows)
 
-        if confirm_resp := client.post(f"/incidents/test-p4-repeat/confirm"):
-            final_status = confirm_resp.json().get("status")
+        if init_status == "awaiting_approval" and token:
+            confirm_resp = client.post(f"/incidents/{repeat_inc_id}/confirm")
+            c_data = wait_for_incident_data(client, repeat_inc_id, lambda d: d.get("status") in ("done", "failed"), timeout=60.0)
+            final_status = c_data.get("status")
         else:
             final_status = init_status
 
@@ -157,15 +187,16 @@ def run_phase4_tests():
     try:
         orch_main.llm_call_counters["detective_calls"] = 0
         orch_main.llm_call_counters["remediator_calls"] = 0
-        reset_state("test-p4-different")
+        reset_state(different_inc_id)
 
         req = {
-            "incident_id": "test-p4-different",
-            "description": "Unrelated network socket timeout on payment gateway interface",
+            "incident_id": different_inc_id,
+            "description": different_desc,
             "desired_action_type": "restart_service"
         }
-        resp = client.post("/incidents", json=req)
-        data = resp.json()
+        client.post("/incidents", json=req)
+        
+        data = wait_for_incident_data(client, different_inc_id, lambda d: d.get("status") in ("awaiting_approval", "done", "failed"), timeout=60.0)
         event_log = data.get("event_log", [])
 
         full_path_log = any("[FULL REASONING PATH]" in log for log in event_log)
@@ -187,15 +218,16 @@ def run_phase4_tests():
     # --------------------------------------------------------------------------
     print("\n--- Test E: Failed Outcomes Never Recalled ---")
     try:
+        failed_sig = f"Database deadlock corruption crash {ts}"
         remember(
-            incident_id="test-p4-failed-incident",
-            fault_signature="Database deadlock corruption crash",
+            incident_id=f"test-p4-failed-{ts}",
+            fault_signature=failed_sig,
             action_taken={"action_type": "delete_database"},
             outcome="failed",
             resolution_time_seconds=5.0
         )
 
-        recalled = recall("Database deadlock corruption crash", similarity_threshold=0.70)
+        recalled = recall(failed_sig, similarity_threshold=0.70)
         print(f"Recall result for seeded failed memory: {recalled}")
 
         if recalled is None:
@@ -211,20 +243,22 @@ def run_phase4_tests():
     # --------------------------------------------------------------------------
     print("\n--- Test F: Persistence Across Process/Client Restart ---")
     try:
+        persist_inc_id = f"test-p4-persistence-{ts}"
+        persist_sig = f"Persistence test fault signature unique key {ts}"
         remember(
-            incident_id="test-p4-persistence",
-            fault_signature="Persistence test fault signature unique key 12345",
+            incident_id=persist_inc_id,
+            fault_signature=persist_sig,
             action_taken={"action_type": "restart_service"},
             outcome="resolved",
             resolution_time_seconds=8.0
         )
 
         reloaded_client = get_qdrant_client(force_new=True)
-        recalled = recall("Persistence test fault signature unique key 12345", similarity_threshold=0.80)
+        recalled = recall(persist_sig, similarity_threshold=0.80)
         
         print(f"Reloaded Recall Result: {recalled.get('incident_id') if recalled else None}")
 
-        if recalled and recalled.get("incident_id") == "test-p4-persistence":
+        if recalled and recalled.get("incident_id") == persist_inc_id:
             print("[PASS] Test F: Persistent Qdrant storage verified! Memory successfully retrieved after client reload")
             passed += 1
         else:
@@ -238,11 +272,12 @@ def run_phase4_tests():
     print("\n--- Test G: Sleep-Phase Consolidation ---")
     try:
         clear_qdrant_memories()
+        consolidate_sig = f"Memory leak checkout-v1 cluster degradation {ts}"
 
         for i, res_time in enumerate([10.0, 12.0, 14.0]):
             remember(
-                incident_id=f"test-p4-consolidate-{i}",
-                fault_signature="Memory leak checkout-v1 cluster degradation",
+                incident_id=f"test-p4-consolidate-{ts}-{i}",
+                fault_signature=consolidate_sig,
                 action_taken={"action_type": "restart_service"},
                 outcome="resolved",
                 resolution_time_seconds=res_time

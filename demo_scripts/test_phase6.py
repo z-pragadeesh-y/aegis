@@ -36,6 +36,7 @@ def run_phase6_test_suite():
     
     passed_count = 0
     total_tests = 4
+    ts = int(time.time())
 
     # -------------------------------------------------------------
     # Test 1: Immediate Degraded Metrics Assertion for 5 Fault Types
@@ -45,7 +46,7 @@ def run_phase6_test_suite():
 
     try:
         # a) Memory Pressure
-        inc_mem = "inc-p6-test-memory"
+        inc_mem = f"inc-p6-test-memory-{ts}"
         t0 = time.time()
         res_mem = target_client.post(f"/faults/memory_pressure?incident_id={inc_mem}")
         met_mem = target_client.get(f"/metrics/{inc_mem}").json()
@@ -56,7 +57,7 @@ def run_phase6_test_suite():
         print(f"[PASS] memory_pressure: memory={met_mem['memory_percent']}%, cpu={met_mem['cpu_percent']}% ({dur_mem:.3f}s)", flush=True)
 
         # b) CPU Pressure
-        inc_cpu = "inc-p6-test-cpu"
+        inc_cpu = f"inc-p6-test-cpu-{ts}"
         t0 = time.time()
         res_cpu = target_client.post(f"/faults/cpu_pressure?incident_id={inc_cpu}")
         met_cpu = target_client.get(f"/metrics/{inc_cpu}").json()
@@ -67,7 +68,7 @@ def run_phase6_test_suite():
         print(f"[PASS] cpu_pressure: cpu={met_cpu['cpu_percent']}%, latency={met_cpu['response_time_ms']}ms ({dur_cpu:.3f}s)", flush=True)
 
         # c) Latency Injection
-        inc_lat = "inc-p6-test-latency"
+        inc_lat = f"inc-p6-test-latency-{ts}"
         t0 = time.time()
         res_lat = target_client.post(f"/faults/latency_injection?incident_id={inc_lat}")
         met_lat = target_client.get(f"/metrics/{inc_lat}").json()
@@ -78,7 +79,7 @@ def run_phase6_test_suite():
         print(f"[PASS] latency_injection: latency={met_lat['response_time_ms']}ms, connectivity={met_lat['connectivity']} ({dur_lat:.3f}s)", flush=True)
 
         # d) Packet Loss
-        inc_pkt = "inc-p6-test-packet"
+        inc_pkt = f"inc-p6-test-packet-{ts}"
         t0 = time.time()
         res_pkt = target_client.post(f"/faults/packet_loss?incident_id={inc_pkt}")
         met_pkt = target_client.get(f"/metrics/{inc_pkt}").json()
@@ -90,7 +91,7 @@ def run_phase6_test_suite():
         print(f"[PASS] packet_loss: connectivity={met_pkt['connectivity']}, err={met_pkt['error_rate']}, active_conn={met_pkt['active_connections']} ({dur_pkt:.3f}s)", flush=True)
 
         # e) Pod Failure
-        inc_pod = "inc-p6-test-pod"
+        inc_pod = f"inc-p6-test-pod-{ts}"
         t0 = time.time()
         res_pod = target_client.post(f"/faults/pod_failure?incident_id={inc_pod}")
         met_pod = target_client.get(f"/metrics/{inc_pod}").json()
@@ -112,11 +113,11 @@ def run_phase6_test_suite():
     detective_diagnoses = {}
     try:
         fault_types = [
-            ("memory_pressure", "inc-p6-det-memory"),
-            ("cpu_pressure", "inc-p6-det-cpu"),
-            ("latency_injection", "inc-p6-det-latency"),
-            ("packet_loss", "inc-p6-det-packet"),
-            ("pod_failure", "inc-p6-det-pod")
+            ("memory_pressure", f"inc-p6-det-memory-{ts}"),
+            ("cpu_pressure", f"inc-p6-det-cpu-{ts}"),
+            ("latency_injection", f"inc-p6-det-latency-{ts}"),
+            ("packet_loss", f"inc-p6-det-packet-{ts}"),
+            ("pod_failure", f"inc-p6-det-pod-{ts}")
         ]
 
         for fault_type, inc_id in fault_types:
@@ -147,7 +148,7 @@ def run_phase6_test_suite():
     print("\n--- Test 3: Reset to Healthy State Verification ---", flush=True)
     reset_data = {}
     try:
-        inc_reset = "inc-p6-test-reset"
+        inc_reset = f"inc-p6-test-reset-{ts}"
         target_client.post(f"/faults/cpu_pressure?incident_id={inc_reset}")
         before_state = target_client.get(f"/metrics/{inc_reset}").json()
         
@@ -188,13 +189,13 @@ def run_phase6_test_suite():
         p3_success = run_phase3_tests()
         
         print("\nRunning Phase 3 Concurrency Test...", flush=True)
-        run_locked_concurrency_test()
+        conc_success = run_locked_concurrency_test()
         
-        if p3_success:
+        if p3_success and conc_success:
             print("✅ Test 4 PASSED: All legacy Phase 3 assertions passed without regression!", flush=True)
             passed_count += 1
         else:
-            print("❌ Test 4 FAILED: Legacy Phase 3 test suite failed.", flush=True)
+            print(f"❌ Test 4 FAILED: Legacy Phase 3 test suite or concurrency test failed (p3={p3_success}, conc={conc_success}).", flush=True)
     except Exception as e:
         print(f"❌ Test 4 FAILED: {e}", flush=True)
 
