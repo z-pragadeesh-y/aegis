@@ -4,6 +4,7 @@ import './App.css'
 const ORCH_API = 'http://127.0.0.1:8002'
 const ORCH_WS = 'ws://127.0.0.1:8002'
 const GATEWAY_API = 'http://127.0.0.1:8001'
+const TARGET_SYS_API = 'http://127.0.0.1:8003'
 
 function App() {
   const [incidents, setIncidents] = useState([])
@@ -17,7 +18,8 @@ function App() {
 
   // Trigger form state
   const [triggerId, setTriggerId] = useState(`inc-p5-${Math.floor(Math.random() * 8999 + 1000)}`)
-  const [triggerDesc, setTriggerDesc] = useState('Critical memory leak on checkout service causing 92% CPU spike')
+  const [faultType, setFaultType] = useState('memory_pressure')
+  const [triggerDesc, setTriggerDesc] = useState('Critical memory leak on checkout service causing high memory pressure')
   const [triggerAction, setTriggerAction] = useState('restart_service')
   const [isSubmitting, setIsSubmitting] = useState(false)
 
@@ -197,6 +199,16 @@ function App() {
 
     setIsSubmitting(true)
     try {
+      // 1. Inject fault into target system API (port 8003)
+      try {
+        await fetch(`${TARGET_SYS_API}/faults/${faultType}?incident_id=${triggerId}`, {
+          method: 'POST'
+        })
+      } catch (fErr) {
+        console.warn('Target system fault injection API call warning:', fErr)
+      }
+
+      // 2. Trigger incident pipeline via Orchestrator API (port 8002)
       const res = await fetch(`${ORCH_API}/incidents`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -335,6 +347,27 @@ function App() {
                 onChange={(e) => setTriggerId(e.target.value)}
                 required
               />
+            </div>
+            <div className="input-group">
+              <label>Fault Type Preset</label>
+              <select
+                value={faultType}
+                onChange={(e) => {
+                  const val = e.target.value
+                  setFaultType(val)
+                  if (val === 'memory_pressure') setTriggerDesc('Critical memory leak on checkout service causing high memory pressure')
+                  else if (val === 'cpu_pressure') setTriggerDesc('CPU exhaustion and elevated response latency on worker node')
+                  else if (val === 'latency_injection') setTriggerDesc('High response time latency injection on payment gateway')
+                  else if (val === 'packet_loss') setTriggerDesc('Network packet loss causing high drop rate and connectivity failure')
+                  else if (val === 'pod_failure') setTriggerDesc('Instance registered in service mesh but not serving traffic')
+                }}
+              >
+                <option value="memory_pressure">Memory Pressure (Heap leak / 95% memory)</option>
+                <option value="cpu_pressure">CPU Pressure (Compute exhaustion / 90%+ CPU)</option>
+                <option value="latency_injection">Latency Injection (1000-3000ms response delay)</option>
+                <option value="packet_loss">Packet Loss (Network partition / high error rate)</option>
+                <option value="pod_failure">Pod Failure (Registered but not serving traffic)</option>
+              </select>
             </div>
             <div className="input-group">
               <label>Fault Description</label>

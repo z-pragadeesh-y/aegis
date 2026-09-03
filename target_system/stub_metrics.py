@@ -6,11 +6,26 @@ from filelock import FileLock
 STATE_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.json")
 LOCK_FILE_PATH = STATE_FILE_PATH + ".lock"
 
+HEALTHY_BASELINE_STATE = {
+    "cpu_percent": 15.0,
+    "memory_percent": 25.0,
+    "error_rate": 0.01,
+    "status": "healthy",
+    "response_time_ms": 120.0,
+    "active_connections": 150,
+    "connectivity": True,
+    "instance_serving": True
+}
+
 BASELINE_DEGRADED_STATE = {
     "cpu_percent": 92.0,
     "memory_percent": 85.0,
     "error_rate": 0.18,
-    "status": "degraded"
+    "status": "degraded",
+    "response_time_ms": 1200.0,
+    "active_connections": 600,
+    "connectivity": True,
+    "instance_serving": True
 }
 
 def load_all_states() -> Dict[str, Dict[str, Any]]:
@@ -33,26 +48,29 @@ def save_all_states(all_states: Dict[str, Dict[str, Any]]):
     with open(STATE_FILE_PATH, "w", encoding="utf-8") as f:
         json.dump(all_states, f, indent=2)
 
-def reset_state(incident_id: Optional[str] = None) -> Dict[str, Any]:
+def reset_state(incident_id: Optional[str] = None, healthy: bool = False) -> Dict[str, Any]:
     """
-    Resets state for a specific incident_id (or resets all if None) to BASELINE_DEGRADED_STATE.
+    Resets state for a specific incident_id (or resets all if None) to BASELINE_DEGRADED_STATE
+    or HEALTHY_BASELINE_STATE if healthy=True.
     Protected by filelock across processes.
     """
+    target = HEALTHY_BASELINE_STATE if healthy else BASELINE_DEGRADED_STATE
     with FileLock(LOCK_FILE_PATH, timeout=10.0):
         all_states = load_all_states()
         if incident_id:
-            all_states[incident_id] = BASELINE_DEGRADED_STATE.copy()
+            all_states[incident_id] = target.copy()
             save_all_states(all_states)
             return all_states[incident_id].copy()
         else:
             all_states = {}
             save_all_states(all_states)
-            return BASELINE_DEGRADED_STATE.copy()
+            return target.copy()
 
 def read_state(incident_id: str = "default") -> Dict[str, Any]:
     """
     Reads specific incident's state from state.json, auto-initializing fresh
     BASELINE_DEGRADED_STATE for any incident_id not yet present.
+    Ensures backward compatibility by supplying default values for new fields if missing.
     Protected by filelock across processes.
     """
     with FileLock(LOCK_FILE_PATH, timeout=10.0):
@@ -60,6 +78,16 @@ def read_state(incident_id: str = "default") -> Dict[str, Any]:
         if incident_id not in all_states or not isinstance(all_states[incident_id], dict) or "cpu_percent" not in all_states[incident_id]:
             all_states[incident_id] = BASELINE_DEGRADED_STATE.copy()
             save_all_states(all_states)
+        else:
+            state = all_states[incident_id]
+            updated = False
+            for k, v in BASELINE_DEGRADED_STATE.items():
+                if k not in state:
+                    state[k] = v
+                    updated = True
+            if updated:
+                all_states[incident_id] = state
+                save_all_states(all_states)
         return all_states[incident_id].copy()
 
 def write_state(incident_id: str, new_state: dict):
@@ -74,7 +102,7 @@ def write_state(incident_id: str, new_state: dict):
 
 def get_current_metrics(incident_id: str) -> dict:
     """
-    Returns telemetry payload merging per-incident state.json numeric fields with simulated log lines.
+    Returns telemetry payload merging per-incident state.json fields with simulated log lines.
     """
     current_state = read_state(incident_id)
     id_lower = incident_id.lower()
@@ -85,32 +113,40 @@ def get_current_metrics(incident_id: str) -> dict:
             "WARNING: Worker process memory usage exceeded threshold (95%)",
             "ERROR: Service checkout-v1 health check failed (timeout)"
         ]
-        active_conn = 450
     elif "cpu" in id_lower or "spike" in id_lower:
         logs = [
             "WARNING: CPU usage high contention on pool worker thread",
-            "ERROR: Response latency 5200ms exceeds 500ms SLA limit"
+            "ERROR: Response latency exceeds SLA limit"
         ]
-        active_conn = 1200
+    elif "packet" in id_lower or "network" in id_lower or "loss" in id_lower:
+        logs = [
+            "ERROR: Packet loss detected across gateway interface eth0",
+            "WARNING: TCP retransmission count exceeded threshold"
+        ]
+    elif "latency" in id_lower:
+        logs = [
+            "WARNING: High latency observed on service endpoints",
+            "INFO: Downstream service response delayed"
+        ]
+    elif "pod" in id_lower or "instance" in id_lower:
+        logs = [
+            "WARNING: Instance registered in service mesh but not responding to health pings",
+            "ERROR: Traffic routing failure to non-serving pod"
+        ]
     elif "routine" in id_lower or "health" in id_lower or "check" in id_lower:
         logs = [
             "INFO: System metrics operating within normal SLA parameters",
             "INFO: Health check status operational",
             "INFO: Telemetry metrics collection normal"
         ]
-        active_conn = 100
     else:
         logs = [
             "ERROR: Connection pool exhaustion detected in DB driver",
-            "WARNING: Response time spike on /api/v1/checkout - 4200ms",
-            "ERROR: Database query timeout after 30s"
+            "WARNING: Response time spike on /api/v1/checkout",
+            "ERROR: Query timeout after 30s"
         ]
-        active_conn = 600
 
     metrics = current_state.copy()
-    metrics.update({
-        "incident_id": incident_id,
-        "active_connections": active_conn,
-        "recent_log_lines": logs
-    })
+    metrics["incident_id"] = incident_id
+    metrics["recent_log_lines"] = logs
     return metrics

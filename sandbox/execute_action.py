@@ -11,7 +11,11 @@ BASELINE_DEGRADED_STATE = {
     "cpu_percent": 92.0,
     "memory_percent": 85.0,
     "error_rate": 0.18,
-    "status": "degraded"
+    "status": "degraded",
+    "response_time_ms": 1200.0,
+    "active_connections": 600,
+    "connectivity": True,
+    "instance_serving": True
 }
 
 def main():
@@ -39,18 +43,29 @@ def main():
 
         if action_type in ("restart_service", "restart_instance", "replace_instance", "rollback_deploy"):
             state["cpu_percent"] = round(random.uniform(10.0, 25.0), 1)
+            state["memory_percent"] = round(random.uniform(20.0, 35.0), 1)
             state["error_rate"] = round(random.uniform(0.005, 0.02), 3)
+            state["response_time_ms"] = round(random.uniform(80.0, 150.0), 1)
+            state["active_connections"] = random.randint(100, 200)
+            state["connectivity"] = True
+            state["instance_serving"] = True
             state["status"] = "healthy"
         elif action_type == "throttle_process":
             current_cpu = float(state.get("cpu_percent", 92.0))
+            current_latency = float(state.get("response_time_ms", 1200.0))
             new_cpu = round(current_cpu * 0.5, 1)
+            new_latency = round(current_latency * 0.5, 1)
             state["cpu_percent"] = new_cpu
-            if new_cpu < 40.0:
+            state["response_time_ms"] = new_latency
+            if new_cpu < 40.0 or new_latency < 300.0:
                 state["status"] = "healthy"
         elif action_type in ("trigger_circuit_breaker", "reroute_traffic"):
             new_err = round(random.uniform(0.005, 0.02), 3)
             state["error_rate"] = new_err
-            if new_err < 0.05:
+            state["connectivity"] = True
+            state["active_connections"] = random.randint(100, 250)
+            state["response_time_ms"] = round(random.uniform(100.0, 200.0), 1)
+            if new_err < 0.05 and state.get("connectivity", True):
                 state["status"] = "healthy"
         elif action_type in ("read_logs", "read_metrics"):
             pass
